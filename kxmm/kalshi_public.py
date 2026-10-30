@@ -18,6 +18,9 @@ SUPPORTED_BASES = (
 )
 
 
+TRADES_PAGE = 1000   # trades per page requested from /markets/trades
+
+
 class NotFound(Exception):
     """The market (or other resource) no longer exists: HTTP 404."""
 
@@ -109,7 +112,7 @@ class KalshiPublic:
         out: list[dict] = []
         cursor = ""
         for _ in range(max_pages):
-            params = {"ticker": ticker, "min_ts": int(min_ts), "limit": 1000}
+            params = {"ticker": ticker, "min_ts": int(min_ts), "limit": TRADES_PAGE}
             if cursor:
                 params["cursor"] = cursor
             d = self._get("/markets/trades", params)

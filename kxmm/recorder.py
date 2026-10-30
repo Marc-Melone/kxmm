@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import db
 from .book import Book
-from .kalshi_public import NotFound
+from .kalshi_public import TRADES_PAGE, NotFound
 from .keepawake import keep_awake
 from .select import Scored, choose, prefilter, score, shortlist
 
@@ -55,13 +55,13 @@ class Recorder:
     # --- bookkeeping -------------------------------------------------------
     def _beat(self) -> None:
         """Heartbeat after every request; abandon the cycle if stop was asked."""
-        db.heartbeat(self.con, self.clock(), self.rec["gap_threshold_s"])
+        db.heartbeat(self.con, self.clock(), self.rec["coverage_gap_s"])
         if self.kill_path.exists():
             raise _StopRequested
 
     def _killed(self) -> bool:
         if self.kill_path.exists():
-            db.heartbeat(self.con, self.clock(), self.rec["gap_threshold_s"])
+            db.heartbeat(self.con, self.clock(), self.rec["coverage_gap_s"])
             db.kv_set(self.con, "stopped", repr(self.clock()))   # status: STOPPED at once
             try:
                 self.kill_path.unlink(missing_ok=True)
@@ -165,7 +165,7 @@ class Recorder:
                 continue
             fails = 0
             db.store_book(self.con, t, self.clock(), raw)
-            db.mark_poll(self.con, t, self.clock(), self.rec["gap_threshold_s"])
+            db.mark_poll(self.con, t, self.clock(), self.rec["coverage_gap_s"])
             self._beat()
 
     def poll_trades(self, now: float) -> None:
@@ -182,12 +182,18 @@ class Recorder:
                     return
                 continue
             fails = 0
+            db.mark_poll(self.con, f"trades:{t}", self.clock(),
+                         self.rec["trades_poll_s"] + self.rec["coverage_gap_s"])
             if rows:
                 try:
                     db.store_trades(self.con, rows)
                     stamps = [s for s in map(_safe_ts, rows) if s is not None]
                     if stamps:
                         db.kv_set(self.con, f"trades_ts:{t}", repr(max(stamps)))
+                        if len(rows) >= self.rec["trades_max_pages"] * TRADES_PAGE:
+                            # page cap hit: older trades in this window were never fetched
+                            db.add_gap(self.con, f"trades:{t}", min_ts, min(stamps))
+                            log.warning("trades %s: page cap hit; hole recorded", t)
                 except Exception as e:  # noqa: BLE001
                     log.warning("trades %s: store failed: %s", t, e)
             self._beat()
@@ -201,12 +207,10 @@ class Recorder:
                  q("SELECT COUNT(*) FROM gaps WHERE end_ts >= ?"))
 
     def run(self) -> None:
-        thr = self.rec["gap_threshold_s"]
         with self.awake():
             now = self.clock()
-            n = db.record_restart_gaps(self.con, now, thr, tickers=self.universe)
-            if n:
-                log.info("restart: recorded %d gaps for downtime", n)
+            if db.record_restart_gaps(self.con, now, self.rec["coverage_gap_s"]):
+                log.info("restart: recorded the loop's downtime as a gap")
             next_refresh = next_books = next_trades = now
             next_summary = now + SUMMARY_EVERY_S
             while True:

@@ -12,7 +12,7 @@ def seeded(tmp_path, n=20):
     con = db.connect(tmp_path / "t.db")
     tickers = [f"T{i}" for i in range(n)]
     con.executemany("INSERT INTO poll_state(ticker, first_ok, last_ok) VALUES(?,?,?)",
-                    [(t, NOW - DAY - 60, NOW) for t in tickers])
+                    [(k, NOW - DAY - 60, NOW) for t in tickers for k in (t, f"trades:{t}")])
     con.execute("INSERT INTO selections(ts, tickers, detail) VALUES(?,?,?)",
                 (NOW - 100, json.dumps(tickers), "[]"))
     con.commit()
@@ -68,3 +68,32 @@ def test_stale_after_covers_slowest_request():
     # 4 attempts x 20 s timeout + 1+2+4 s backoff between them = 87 s for one
     # request, plus three 10 s book polls
     assert stale_after_s(load_config("config.yaml")) == 117
+
+
+def test_report_requires_trade_polls(tmp_path):
+    con = seeded(tmp_path)
+    con.execute("DELETE FROM poll_state WHERE ticker LIKE 'trades:%'")
+    con.commit()
+    r = report(con, NOW)
+    assert r["clean_markets"] == [] and r["phase1_pass"] is False
+
+
+def test_report_trades_gap_breaks_that_market(tmp_path):
+    con = seeded(tmp_path, n=21)
+    con.execute("INSERT INTO gaps(ticker, start_ts, end_ts) VALUES('trades:T3', ?, ?)",
+                (NOW - 5000, NOW - 4000))
+    con.commit()
+    r = report(con, NOW)
+    assert "T3" not in r["clean_markets"] and len(r["clean_markets"]) == 20
+    assert r["phase1_pass"] is True
+
+
+def test_report_ignores_short_gaps_for_pass(tmp_path):
+    con = seeded(tmp_path)
+    con.execute("INSERT INTO gaps(ticker, start_ts, end_ts) VALUES('T3', ?, ?)",
+                (NOW - 5000, NOW - 4940))                       # 60 s: recorded, not fatal
+    con.execute("INSERT INTO gaps(ticker, start_ts, end_ts) VALUES('*', ?, ?)",
+                (NOW - 3000, NOW - 2900))
+    con.commit()
+    r = report(con, NOW)
+    assert r["phase1_pass"] is True and r["max_gap_s"] == 100

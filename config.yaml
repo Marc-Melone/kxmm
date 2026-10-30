@@ -15,6 +15,7 @@ record:
   max_per_event: 2
   shortlist_n: 150           # markets whose books are fetched for scoring each refresh
   gap_threshold_s: 300       # Phase 1 pass: no gap over 5 min
+  coverage_gap_s: 30         # every gap longer than this is recorded for the simulator
 select:
   mid_lo: 0.10
   mid_hi: 0.90

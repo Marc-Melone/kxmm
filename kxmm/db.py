@@ -179,20 +179,19 @@ def heartbeat(con, ts: float, gap_threshold_s: float) -> None:
     kv_set(con, "heartbeat", repr(ts))
 
 
-def record_restart_gaps(con, now: float, gap_threshold_s: float,
-                        tickers: list[str] | None = None) -> int:
-    n = 0
-    hb = last_heartbeat(con)
-    if hb is not None and now - hb > gap_threshold_s:
-        _gap_then_set(con, "*", now, hb, gap_threshold_s)
-        n += 1
-    kv_set(con, "heartbeat", repr(now))
-    for r in con.execute("SELECT ticker, last_ok FROM poll_state").fetchall():
-        if tickers is not None and r["ticker"] not in tickers:
-            continue
-        if now - r["last_ok"] > gap_threshold_s:
-            _gap_then_set(con, r["ticker"], now, r["last_ok"], gap_threshold_s)
-            con.execute("UPDATE poll_state SET last_ok=? WHERE ticker=?", (now, r["ticker"]))
-            n += 1
+def add_gap(con, ticker: str, start_ts: float, end_ts: float) -> None:
+    con.execute("INSERT INTO gaps(ticker, start_ts, end_ts) VALUES(?,?,?)",
+                (ticker, start_ts, end_ts))
     con.commit()
+
+
+def record_restart_gaps(con, now: float, gap_s: float) -> int:
+    """Close the loop's own downtime ('*'). Each market's gap is closed by its
+    first real poll after the restart, which may come minutes later."""
+    hb = last_heartbeat(con)
+    n = 0
+    if hb is not None and now - hb > gap_s:
+        _gap_then_set(con, "*", now, hb, gap_s)
+        n = 1
+    kv_set(con, "heartbeat", repr(now))
     return n

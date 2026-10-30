@@ -240,3 +240,22 @@ def test_run_survives_an_unexpected_exception(tmp_path, monkeypatch):
     rec.universe = ["K1"]
     rec.run()                                             # returns via KILL, never raises
     assert len(calls) >= 2                                # the loop kept polling
+
+
+def test_poll_trades_marks_trade_coverage(tmp_path):
+    rec, con = recorder(tmp_path, FakeClient())
+    rec.universe = ["K1"]
+    rec.poll_trades(NOW)                                   # an empty page is still a good poll
+    assert con.execute("SELECT COUNT(*) FROM poll_state WHERE ticker='trades:K1'").fetchone()[0] == 1
+
+
+def test_poll_trades_records_hole_when_page_cap_hit(tmp_path, monkeypatch):
+    rows = json.loads((FIX / "trades.json").read_text(encoding="utf-8"))["trades"]
+    many = [dict(rows[0], trade_id=f"t{i}") for i in range(1000)]
+    c = FakeClient(trades=many)
+    rec, con = recorder(tmp_path, c)
+    monkeypatch.setitem(rec.rec, "trades_max_pages", 1)    # 1 page x 1000 = capped
+    rec.universe = ["K1"]
+    rec.poll_trades(NOW)
+    hole = con.execute("SELECT start_ts, end_ts FROM gaps WHERE ticker='trades:K1'").fetchone()
+    assert hole is not None and hole[0] == c.trade_calls[0][1]

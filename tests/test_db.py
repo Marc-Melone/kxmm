@@ -41,11 +41,14 @@ def test_mark_poll_gap_only_over_threshold(tmp_path):
 
 def test_restart_gaps_cover_downtime(tmp_path):
     con = db.connect(tmp_path / "t.db")
-    db.mark_poll(con, "T", 0, 300)
-    db.heartbeat(con, 0, 300)
-    assert db.record_restart_gaps(con, 1000, 300) == 2
-    assert gaps(con) == [("*", 0, 1000), ("T", 0, 1000)]
+    db.mark_poll(con, "T", 0, 30)
+    db.heartbeat(con, 0, 30)
+    assert db.record_restart_gaps(con, 1000, 30) == 1
+    assert gaps(con) == [("*", 0, 1000)]
     assert db.last_heartbeat(con) == 1000
+    # the market's gap runs until it is really polled again, not until the restart
+    db.mark_poll(con, "T", 1100, 30)
+    assert gaps(con) == [("*", 0, 1000), ("T", 0, 1100)]
 
 
 def test_upsert_markets_derives_series(tmp_path):

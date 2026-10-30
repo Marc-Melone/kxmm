@@ -4,7 +4,9 @@ from kxmm.config import load_config
 
 
 def test_load_config_reads_values():
-    assert load_config("config.yaml")["record"]["gap_threshold_s"] == 300
+    cfg = load_config("config.yaml")
+    assert cfg["record"]["gap_threshold_s"] == 300
+    assert cfg["record"]["coverage_gap_s"] == 30
 
 
 def test_load_config_names_missing_key(tmp_path):

@@ -1,8 +1,9 @@
 """Is the loop alive, and does Phase 1's pass rule hold?
 
-Phase 1 passes when, over the last 24 h, at least 20 markets were polled
-from the window's start to now with no gap over gap_threshold_s, and the
-loop itself ('*') had no such gap.
+Phase 1 passes when, over the last 24 h, at least 20 markets had both their
+books and their trades ('trades:<ticker>') polled from the window's start
+to now with no gap over gap_threshold_s, and the loop itself ('*') had no
+such gap. Shorter gaps are recorded for the simulator but don't fail it.
 """
 from __future__ import annotations
 
@@ -35,11 +36,16 @@ def report(con, now: float, window_s: float = 86400, gap_threshold_s: float = 30
     gaps = [dict(r) for r in con.execute(
         "SELECT ticker, start_ts, end_ts FROM gaps WHERE end_ts > ? AND start_ts < ?",
         (start, now))]
-    gapped = {g["ticker"] for g in gaps}
-    clean = [r["ticker"] for r in con.execute(
-        "SELECT ticker FROM poll_state WHERE first_ok <= ? AND last_ok >= ? ORDER BY ticker",
-        (start, now - gap_threshold_s)) if r["ticker"] not in gapped]
-    loop_gaps = [g for g in gaps if g["ticker"] == "*"]
+    # every gap over coverage_gap_s is recorded; only long ones break Phase 1
+    long_gaps = [g for g in gaps if g["end_ts"] - g["start_ts"] > gap_threshold_s]
+    gapped = {g["ticker"] for g in long_gaps}
+    covered = {r["ticker"] for r in con.execute(
+        "SELECT ticker FROM poll_state WHERE first_ok <= ? AND last_ok >= ?",
+        (start, now - gap_threshold_s))} - gapped
+    # a clean market has both its books and its trades covered
+    clean = sorted(t for t in covered
+                   if not t.startswith("trades:") and f"trades:{t}" in covered)
+    loop_gaps = [g for g in long_gaps if g["ticker"] == "*"]
     count = lambda t: con.execute(  # noqa: E731
         f"SELECT COUNT(*) FROM {t} WHERE ts >= ?", (start,)).fetchone()[0]
     return {
