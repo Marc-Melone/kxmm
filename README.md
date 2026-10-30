@@ -34,15 +34,27 @@ Phase 1 is a **recorder**. It picks up to 40 Kalshi markets that pay liquidity r
    powercfg /change standby-timeout-ac 0
    powercfg /change hibernate-timeout-ac 0
    ```
-   On a laptop, keep it plugged in.
+   On a laptop, keep it plugged in and stop a closed lid from sleeping it:
+   ```powershell
+   powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+   powercfg /setactive SCHEME_CURRENT
+   ```
 5. **Check and start:**
    ```powershell
    .\kxmm.ps1 test      # all tests pass
    .\kxmm.ps1 start
-   .\kxmm.ps1 status    # loop: RUNNING after ~1 minute
+   .\kxmm.ps1 status    # loop: RUNNING within ~2 minutes
    ```
+6. **Prove it survives on this machine** before trusting the 24-hour clock. This launch path has only been tested on a Mac:
+   1. After `start`, **close the PowerShell window**.
+   2. Open a new one, `cd` back into the folder, and wait 2 minutes.
+   3. `.\kxmm.ps1 status` must say `loop: RUNNING`, and `.\kxmm.ps1 log` must show "universe refreshed".
+   4. `.\kxmm.ps1 stop` must print `stopped`, and `status` must then say `STOPPED`.
+   5. `.\kxmm.ps1 start` again and leave it running.
 
-After a reboot, run `.\kxmm.ps1 start` again. The downtime shows up as a gap, and the 24-hour Phase 1 clock restarts from there.
+   If step 3 says STOPPED, closing the window killed the recorder. Tell Claude; it can switch the launch to a scheduled task.
+
+After a reboot (Windows Update does this on its own; set active hours or pause updates for the test), run `.\kxmm.ps1 start` again. The downtime shows up as a gap, and the 24-hour Phase 1 clock restarts from there.
 
 ## Layout
 

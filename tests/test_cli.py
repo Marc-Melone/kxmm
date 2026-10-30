@@ -21,3 +21,14 @@ def test_stop_timeout_leaves_kill_for_the_loop(tmp_path, monkeypatch, capsys):
     # the request stands: a busy loop stops after its current request, and
     # `start` clears a stale KILL itself
     assert (tmp_path / "out" / "KILL").exists()
+
+
+def test_spawn_command_prefers_pythonw_on_windows(tmp_path):
+    exe, exew = tmp_path / "python.exe", tmp_path / "pythonw.exe"
+    exe.write_text(""), exew.write_text("")
+    log = tmp_path / "out" / "kxmm.log"
+    assert cli.spawn_command("win32", str(exe), log) == [
+        str(exew), "-u", "-m", "kxmm.loop", "--log-file", str(log)]
+    exew.unlink()                                  # no pythonw: fall back to python.exe
+    assert cli.spawn_command("win32", str(exe), log)[0] == str(exe)
+    assert cli.spawn_command("darwin", "/v/bin/python", log)[0] == "/v/bin/python"

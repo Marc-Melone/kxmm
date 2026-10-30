@@ -6,6 +6,7 @@ deletes KILL when it exits, which is how `stop` knows it finished.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -28,6 +29,17 @@ def spawn_kwargs(platform: str) -> dict:
     return {"start_new_session": True}
 
 
+def spawn_command(platform: str, executable: str, log_path: Path) -> list[str]:
+    """The background loop's command line. On Windows prefer pythonw.exe: it
+    has no console window that someone could close and kill the recorder with."""
+    exe = executable
+    if platform == "win32":
+        w = Path(executable).with_name("pythonw.exe")
+        if w.exists():
+            exe = str(w)
+    return [exe, "-u", "-m", "kxmm.loop", "--log-file", str(log_path)]
+
+
 def _when(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
@@ -41,11 +53,11 @@ def cmd_start(root: Path, cfg: dict) -> None:
     (root / "out" / "KILL").unlink(missing_ok=True)      # a stale KILL would stop it at once
     log_path = root / cfg["output"]["log_path"]
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "a", encoding="utf-8") as log:
-        p = subprocess.Popen([sys.executable, "-u", "-m", "kxmm.loop"], cwd=root,
-                             stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                             **spawn_kwargs(sys.platform))
-    print(f"recorder started (pid {p.pid}); logs: {log_path}")
+    subprocess.Popen(spawn_command(sys.platform, sys.executable, log_path), cwd=root,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, env={**os.environ, "PYTHONUTF8": "1"},
+                     **spawn_kwargs(sys.platform))
+    print(f"recorder started; logs: {log_path} (status shows RUNNING within ~2 min)")
 
 
 def cmd_stop(root: Path, cfg: dict) -> None:
