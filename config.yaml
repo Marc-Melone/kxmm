@@ -1,0 +1,27 @@
+# kxmm — every knob lives here. DESIGN.md is the spec.
+api:
+  base_url: https://api.elections.kalshi.com/trade-api/v2
+  rate_per_sec: 8            # local cap; public limit undocumented (DESIGN.md)
+  timeout_s: 20
+  max_attempts: 4            # backoff 1,2,4,8 s on 429/5xx
+  tickers_batch: 50          # tickers per GET /markets?tickers=
+record:
+  book_poll_s: 10            # order book per market
+  trades_poll_s: 30          # trades per market
+  universe_refresh_s: 3600   # re-run selection hourly
+  trades_backfill_s: 3600    # first trades poll for a new market looks back this far
+  trades_max_pages: 20
+  max_markets: 40
+  max_per_event: 2
+  shortlist_n: 150           # markets whose books are fetched for scoring each refresh
+  gap_threshold_s: 300       # Phase 1 pass: no gap over 5 min
+select:
+  mid_lo: 0.10
+  mid_hi: 0.90
+  min_days_to_close: 3
+  min_program_hours_left: 24
+  quote_size: 10             # contracts per side used to estimate reward share
+  maker_fee_rate: 0.0175     # maker fee = rate * P * (1-P) per contract
+output:
+  db_path: out/kxmm.db
+  log_path: out/kxmm.log
