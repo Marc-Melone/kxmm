@@ -111,3 +111,11 @@ def test_trades_stops_at_max_pages():
 def test_rejects_unknown_base_url():
     with pytest.raises(ValueError):
         KalshiPublic("https://evil.example/trade-api/v2", 8, 5, 4, session=FakeSession([]))
+
+
+def test_client_calls_on_attempt_after_every_try():
+    calls = []
+    c, _ = client([(503, {}), (200, fixture("series.json"))])
+    c.on_attempt = lambda: calls.append(1)
+    c.series("KXSTREAMARRAY")
+    assert len(calls) == 2                      # the failed try counts too

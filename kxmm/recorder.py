@@ -21,6 +21,7 @@ log = logging.getLogger("kxmm.recorder")
 SERIES_TTL_S = 86400
 REFRESH_RETRY_S = 300
 SUMMARY_EVERY_S = 600
+BREAKER_AFTER = 3            # consecutive failed requests that end a polling pass
 MAX_FETCH_FAIL_SHARE = 0.2   # more failed scoring fetches than this = failed refresh
 
 
@@ -40,6 +41,8 @@ class Recorder:
         self.sleep = sleep or time.sleep
         self.awake = awake
         self.universe: list[str] = db.last_selection(con)
+        if hasattr(client, "on_attempt"):
+            client.on_attempt = self._beat     # failed attempts beat and honour KILL too
         self._series: dict[str, tuple[float, dict]] = {}
 
     # --- bookkeeping -------------------------------------------------------
@@ -127,22 +130,36 @@ class Recorder:
                  len(self.universe), len(programs), len(cands), len(scored), self.clock() - t0)
         return self.universe
 
+    def _tripped(self, fails: int, what: str) -> bool:
+        if fails >= BREAKER_AFTER:
+            log.warning("Kalshi unreachable: %d %s requests failed in a row; "
+                        "skipping the rest of this pass", fails, what)
+            return True
+        return False
+
     def poll_books(self, now: float) -> None:
+        fails = 0
         for t in list(self.universe):
             try:
                 raw = self.client.orderbook(t)
             except NotFound:
                 log.info("book %s: 404, dropped from universe", t)
                 self.universe.remove(t)
+                fails = 0
                 continue
             except Exception as e:  # noqa: BLE001
                 log.warning("book %s: %s", t, e)
+                fails += 1
+                if self._tripped(fails, "book"):
+                    return
                 continue
+            fails = 0
             db.store_book(self.con, t, self.clock(), raw)
             db.mark_poll(self.con, t, self.clock(), self.rec["gap_threshold_s"])
             self._beat()
 
     def poll_trades(self, now: float) -> None:
+        fails = 0
         for t in list(self.universe):
             last = db.kv_get(self.con, f"trades_ts:{t}")
             min_ts = int(float(last) if last else now - self.rec["trades_backfill_s"]) - 1
@@ -150,7 +167,11 @@ class Recorder:
                 rows = self.client.trades(t, min_ts, self.rec["trades_max_pages"])
             except Exception as e:  # noqa: BLE001
                 log.warning("trades %s: %s", t, e)
+                fails += 1
+                if self._tripped(fails, "trades"):
+                    return
                 continue
+            fails = 0
             if rows:
                 db.store_trades(self.con, rows)
                 newest = max(db.iso_ts(r["created_time"]) for r in rows)

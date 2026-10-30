@@ -5,7 +5,7 @@ from pathlib import Path
 from kxmm import db
 from kxmm.config import load_config
 from kxmm.kalshi_public import NotFound, Unavailable
-from kxmm.recorder import Recorder
+from kxmm.recorder import Recorder, _StopRequested
 from tests.helpers import NO, NOW, YES, mk, raw_book
 
 FIX = Path(__file__).parent / "fixtures"
@@ -21,6 +21,8 @@ class FakeClient:
         self.trade_rows = trades or []
         self.fail = {}            # ticker -> exception to raise
         self.trade_calls = []     # (ticker, min_ts)
+        self.book_calls = 0
+        self.on_attempt = None    # wired by Recorder, like KalshiPublic
 
     def incentive_programs(self, status="active", type_="liquidity"):
         return list(self.programs)
@@ -32,6 +34,9 @@ class FakeClient:
         return self.series_map.get(ticker, {})
 
     def orderbook(self, ticker):
+        self.book_calls += 1
+        if self.on_attempt:
+            self.on_attempt()
         if ticker in self.fail:
             raise self.fail[ticker]
         return self.book
@@ -166,3 +171,36 @@ def test_run_exits_on_kill_file(tmp_path):
     assert not kill.exists()
     assert db.last_heartbeat(con) is not None
     assert float(db.kv_get(con, "stopped")) >= db.last_heartbeat(con)
+
+
+def test_poll_books_stops_pass_after_three_failures(tmp_path):
+    c = FakeClient()
+    rec, _ = recorder(tmp_path, c)
+    rec.universe = [f"T{i}" for i in range(10)]
+    for t in rec.universe:
+        c.fail[t] = Unavailable("network down")
+    rec.poll_books(NOW)
+    assert c.book_calls == 3
+
+
+def test_failing_requests_keep_heartbeat_fresh_and_honor_kill(tmp_path):
+    import pytest
+    t = {"now": float(NOW)}
+
+    class SlowFail(FakeClient):
+        def orderbook(self, ticker):
+            t["now"] += 87                       # every attempt times out
+            return super().orderbook(ticker)
+
+    c = SlowFail()
+    rec, con = recorder(tmp_path, c, clock=lambda: t["now"])
+    rec.universe = ["A", "B", "C"]
+    for x in rec.universe:
+        c.fail[x] = Unavailable("timeout")
+    rec.poll_books(NOW)
+    assert db.last_heartbeat(con) == t["now"]     # beat after each failed attempt
+    (tmp_path / "out" / "KILL").write_text("", encoding="utf-8")
+    c.book_calls = 0
+    with pytest.raises(_StopRequested):
+        rec.poll_books(NOW)
+    assert c.book_calls == 1                      # stop honoured within one request

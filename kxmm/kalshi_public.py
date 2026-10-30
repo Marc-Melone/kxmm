@@ -53,6 +53,7 @@ class KalshiPublic:
         self._max_attempts = max_attempts
         self._sleep = sleep
         self._rl = RateLimiter(rate_per_sec, sleep)
+        self.on_attempt = None   # called after every HTTP attempt, failed ones too
 
     def _get(self, path: str, params: dict | None = None) -> dict:
         last = "no attempt"
@@ -62,8 +63,10 @@ class KalshiPublic:
                 r = self._session.get(self._base + path, params=params,
                                       timeout=self._timeout)
             except requests.RequestException as e:
-                last = f"{type(e).__name__}: {e}"
-            else:
+                r, last = None, f"{type(e).__name__}: {e}"
+            if self.on_attempt:
+                self.on_attempt()
+            if r is not None:
                 if r.status_code == 404:
                     raise NotFound(path)
                 if r.status_code != 429 and r.status_code < 500:
