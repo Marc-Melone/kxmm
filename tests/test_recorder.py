@@ -204,3 +204,39 @@ def test_failing_requests_keep_heartbeat_fresh_and_honor_kill(tmp_path):
     with pytest.raises(_StopRequested):
         rec.poll_books(NOW)
     assert c.book_calls == 1                      # stop honoured within one request
+
+
+def test_poll_trades_survives_malformed_rows(tmp_path):
+    rows = json.loads((FIX / "trades.json").read_text(encoding="utf-8"))["trades"]
+    broken = {k: v for k, v in rows[0].items() if k != "created_time"} | {"trade_id": "x"}
+    c = FakeClient(trades=rows + [broken])
+    rec, con = recorder(tmp_path, c)
+    rec.universe = ["K1"]
+    rec.poll_trades(NOW)                                  # must not raise
+    assert con.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == len(rows)
+    assert db.kv_get(con, "trades_ts:K1") is not None    # cursor still advanced
+
+
+def test_run_survives_an_unexpected_exception(tmp_path, monkeypatch):
+    import sqlite3
+    t = {"now": float(NOW), "sleeps": 0}
+    real_store, calls = db.store_book, []
+
+    def flaky_store(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_store(*a, **k)
+
+    def sleep(s):
+        t["now"] += s
+        t["sleeps"] += 1
+        if t["sleeps"] == 25:                              # well past the next book poll
+            (tmp_path / "out" / "KILL").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(db, "store_book", flaky_store)
+    c = FakeClient([mk("K1", "EK-1", 0.50, 10, 72, 50)])
+    rec, _ = recorder(tmp_path, c, clock=lambda: t["now"], sleep=sleep)
+    rec.universe = ["K1"]
+    rec.run()                                             # returns via KILL, never raises
+    assert len(calls) >= 2                                # the loop kept polling

@@ -7,11 +7,14 @@ Ticker '*' in gaps means the whole loop was down.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from .book import book_digest
+
+log = logging.getLogger("kxmm.db")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS programs(
@@ -125,14 +128,28 @@ def store_book(con, ticker: str, ts: float, raw: dict) -> bool:
     return True
 
 
+def _trade_row(t: dict) -> tuple:
+    ts = iso_ts(t["created_time"])
+    if ts is None:
+        raise ValueError("trade without created_time")
+    return (t["trade_id"], t["ticker"], ts, float(t["yes_price_dollars"]),
+            float(t["count_fp"]), t.get("taker_side"))
+
+
 def store_trades(con, rows: list[dict]) -> int:
+    """Insert new trades; a malformed row is skipped and counted, never fatal."""
+    parsed, skipped = [], 0
+    for t in rows:
+        try:
+            parsed.append(_trade_row(t))
+        except (KeyError, TypeError, ValueError):
+            skipped += 1
+    if skipped:
+        log.warning("trades: skipped %d malformed row(s)", skipped)
     before = con.total_changes
     con.executemany(
         "INSERT OR IGNORE INTO trades(trade_id, ticker, ts, yes_price, count, taker_side)"
-        " VALUES(?,?,?,?,?,?)",
-        [(t["trade_id"], t["ticker"], iso_ts(t["created_time"]),
-          float(t["yes_price_dollars"]), float(t["count_fp"]), t.get("taker_side"))
-         for t in rows])
+        " VALUES(?,?,?,?,?,?)", parsed)
     con.commit()
     return con.total_changes - before
 

@@ -25,6 +25,13 @@ BREAKER_AFTER = 3            # consecutive failed requests that end a polling pa
 MAX_FETCH_FAIL_SHARE = 0.2   # more failed scoring fetches than this = failed refresh
 
 
+def _safe_ts(row: dict) -> float | None:
+    try:
+        return db.iso_ts(row.get("created_time"))
+    except (TypeError, ValueError):
+        return None
+
+
 class _StopRequested(BaseException):
     """out/KILL appeared mid-cycle. BaseException, so `except Exception`
     around a request never swallows it."""
@@ -56,7 +63,10 @@ class Recorder:
         if self.kill_path.exists():
             db.heartbeat(self.con, self.clock(), self.rec["gap_threshold_s"])
             db.kv_set(self.con, "stopped", repr(self.clock()))   # status: STOPPED at once
-            self.kill_path.unlink(missing_ok=True)
+            try:
+                self.kill_path.unlink(missing_ok=True)
+            except OSError as e:          # e.g. antivirus holding the file on Windows
+                log.warning("could not remove %s: %s (start removes it)", self.kill_path, e)
             log.info("stopped by KILL")
             return True
         return False
@@ -173,9 +183,13 @@ class Recorder:
                 continue
             fails = 0
             if rows:
-                db.store_trades(self.con, rows)
-                newest = max(db.iso_ts(r["created_time"]) for r in rows)
-                db.kv_set(self.con, f"trades_ts:{t}", repr(newest))
+                try:
+                    db.store_trades(self.con, rows)
+                    stamps = [s for s in map(_safe_ts, rows) if s is not None]
+                    if stamps:
+                        db.kv_set(self.con, f"trades_ts:{t}", repr(max(stamps)))
+                except Exception as e:  # noqa: BLE001
+                    log.warning("trades %s: store failed: %s", t, e)
             self._beat()
 
     def _summary(self, since: float) -> None:
@@ -203,6 +217,11 @@ class Recorder:
                         next_refresh, next_books, next_trades)
                 except _StopRequested:
                     continue                      # top of loop records the stop
+                except Exception:  # noqa: BLE001 — a 24/7 loop outlives one bad cycle
+                    log.exception("cycle failed; continuing")
+                    soon = self.clock() + self.rec["book_poll_s"]
+                    next_refresh, next_books, next_trades = (
+                        max(next_refresh, soon), soon, max(next_trades, soon))
                 if self.clock() >= next_summary:
                     self._summary(next_summary - SUMMARY_EVERY_S)
                     next_summary += SUMMARY_EVERY_S

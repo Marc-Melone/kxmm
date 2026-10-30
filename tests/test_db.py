@@ -55,3 +55,11 @@ def test_upsert_markets_derives_series(tmp_path):
     r = con.execute("SELECT * FROM markets").fetchone()
     assert r["series_ticker"] == "KXSTREAMARRAY"
     assert r["category"] == "Financials" and r["fee_type"] == "quadratic"
+
+
+def test_store_trades_skips_malformed_rows(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    good = fixture("trades.json")["trades"]
+    bad = [dict(good[0], trade_id="bad-price", yes_price_dollars=None),
+           {k: v for k, v in good[0].items() if k != "count_fp"} | {"trade_id": "no-count"}]
+    assert db.store_trades(con, good + bad) == len(good)
