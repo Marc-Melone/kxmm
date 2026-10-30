@@ -1,35 +1,11 @@
-from datetime import datetime, timezone
-
 import pytest
 
 from kxmm.book import Book
 from kxmm.config import load_config
 from kxmm.select import Candidate, Scored, choose, prefilter, score
+from tests.helpers import CENT, NO, NOW, YES, mk
 
-NOW = 1_800_000_000
-CENT = [{"start": "0.0000", "end": "1.0000", "step": "0.0100"}]
 CFG = load_config("config.yaml")
-
-
-def iso(ts):
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def mk(ticker, event, mid, close_days, program_hours_left, pool_usd,
-       fee_type="quadratic", mve=None, market_type="binary"):
-    start, end = NOW - 86400, NOW + program_hours_left * 3600
-    days = (end - start) / 86400
-    program = {"id": f"p-{ticker}-{pool_usd}", "market_ticker": ticker,
-               "start_date": iso(start), "end_date": iso(end),
-               "period_reward": round(pool_usd * days * 10_000),
-               "target_size_fp": "1000.00", "discount_factor_bps": 5000,
-               "incentive_type": "liquidity"}
-    market = {"ticker": ticker, "event_ticker": event, "status": "active",
-              "market_type": market_type, "mve_collection_ticker": mve,
-              "yes_bid_dollars": f"{mid - 0.01:.4f}", "yes_ask_dollars": f"{mid + 0.01:.4f}",
-              "close_time": iso(NOW + close_days * 86400), "price_ranges": CENT}
-    series = {"ticker": event.split("-")[0], "fee_type": fee_type, "category": "X"}
-    return program, market, series
 
 
 def build(*specs):
@@ -58,10 +34,6 @@ def test_prefilter_takes_largest_program_per_ticker():
     cands = prefilter([p1, p2], {"K": m}, {s["ticker"]: s}, NOW, CFG)
     assert len(cands) == 1
     assert cands[0].daily_pool_usd == pytest.approx(50, rel=1e-6)
-
-
-YES = [(0.50, 100), (0.49, 150), (0.48, 300), (0.47, 1000)]
-NO = [(0.49, 100), (0.48, 150), (0.47, 300), (0.46, 1000)]   # YES ask 0.51
 
 
 def cand(pool=100.0, maker_fee=False, mid=0.5):
