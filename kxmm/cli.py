@@ -58,8 +58,8 @@ def cmd_stop(root: Path, cfg: dict) -> None:
             print("stopped")
             return
         _sleep(min(1.0, STOP_WAIT_S))
-    kill.unlink(missing_ok=True)
-    print("loop did not confirm stop; run status")
+    # leave KILL: a busy loop stops after its current request; start clears it
+    print("still stopping: the loop exits after its current request; run status")
 
 
 def cmd_status(root: Path, cfg: dict) -> None:

@@ -55,6 +55,15 @@ def test_status_stale_heartbeat_is_stopped(tmp_path):
     assert loop_state(db.connect(tmp_path / "empty.db"), NOW, 30) == ("STOPPED", None)
 
 
+def test_status_after_clean_stop_is_stopped(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    db.kv_set(con, "heartbeat", repr(NOW - 5))
+    db.kv_set(con, "stopped", repr(NOW - 4))          # loop exited cleanly after its last beat
+    assert loop_state(con, NOW, 117)[0] == "STOPPED"
+    db.kv_set(con, "heartbeat", repr(NOW - 1))        # restarted since
+    assert loop_state(con, NOW, 117)[0] == "RUNNING"
+
+
 def test_stale_after_covers_slowest_request():
     # 4 attempts x 20 s timeout + 1+2+4 s backoff between them = 87 s for one
     # request, plus three 10 s book polls

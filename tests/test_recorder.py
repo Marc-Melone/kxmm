@@ -98,6 +98,23 @@ def test_poll_trades_advances_cursor_ts(tmp_path):
     assert c.trade_calls[1] == ("K1", int(newest) - 1)
 
 
+def test_run_stops_mid_refresh_when_kill_appears(tmp_path):
+    class KillOnFirstBook(FakeClient):
+        calls = 0
+
+        def orderbook(self, ticker):
+            KillOnFirstBook.calls += 1
+            (tmp_path / "out" / "KILL").write_text("", encoding="utf-8")
+            return super().orderbook(ticker)
+
+    c = KillOnFirstBook([mk(f"K{i}", f"E{i}-1", 0.50, 10, 72, 50) for i in range(5)])
+    rec, con = recorder(tmp_path, c)
+    rec.run()                                     # a 99 s refresh must not delay stop
+    assert KillOnFirstBook.calls == 1
+    assert not (tmp_path / "out" / "KILL").exists()
+    assert db.kv_get(con, "stopped") is not None
+
+
 def test_run_exits_on_kill_file(tmp_path):
     t = {"now": float(NOW), "slices_after_kill": None}
     kill = tmp_path / "out" / "KILL"
@@ -119,3 +136,4 @@ def test_run_exits_on_kill_file(tmp_path):
     rec.run()
     assert not kill.exists()
     assert db.last_heartbeat(con) is not None
+    assert float(db.kv_get(con, "stopped")) >= db.last_heartbeat(con)

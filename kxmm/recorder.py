@@ -23,6 +23,11 @@ REFRESH_RETRY_S = 300
 SUMMARY_EVERY_S = 600
 
 
+class _StopRequested(BaseException):
+    """out/KILL appeared mid-cycle. BaseException, so `except Exception`
+    around a request never swallows it."""
+
+
 class Recorder:
     def __init__(self, cfg: dict, client, con, root: Path, clock=None, sleep=None,
                  awake=keep_awake):
@@ -38,10 +43,15 @@ class Recorder:
 
     # --- bookkeeping -------------------------------------------------------
     def _beat(self) -> None:
+        """Heartbeat after every request; abandon the cycle if stop was asked."""
         db.heartbeat(self.con, self.clock(), self.rec["gap_threshold_s"])
+        if self.kill_path.exists():
+            raise _StopRequested
 
     def _killed(self) -> bool:
         if self.kill_path.exists():
+            db.heartbeat(self.con, self.clock(), self.rec["gap_threshold_s"])
+            db.kv_set(self.con, "stopped", repr(self.clock()))   # status: STOPPED at once
             self.kill_path.unlink(missing_ok=True)
             log.info("stopped by KILL")
             return True
@@ -147,22 +157,11 @@ class Recorder:
             while True:
                 if self._killed():
                     return
-                now = self.clock()
-                if now >= next_refresh:
-                    try:
-                        self.refresh_universe(now)
-                        next_refresh = now + self.rec["universe_refresh_s"]
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("universe refresh failed, retry in %ds: %s",
-                                    REFRESH_RETRY_S, e)
-                        next_refresh = now + REFRESH_RETRY_S
-                if now >= next_books:
-                    self.poll_books(now)
-                    next_books = now + self.rec["book_poll_s"]
-                if now >= next_trades:
-                    self.poll_trades(now)
-                    next_trades = now + self.rec["trades_poll_s"]
-                self._beat()
+                try:
+                    next_refresh, next_books, next_trades = self._cycle(
+                        next_refresh, next_books, next_trades)
+                except _StopRequested:
+                    continue                      # top of loop records the stop
                 if self.clock() >= next_summary:
                     self._summary(next_summary - SUMMARY_EVERY_S)
                     next_summary += SUMMARY_EVERY_S
@@ -171,3 +170,23 @@ class Recorder:
                     if self._killed():
                         return
                     self.sleep(min(1.0, wake - self.clock()))
+
+    def _cycle(self, next_refresh: float, next_books: float,
+               next_trades: float) -> tuple[float, float, float]:
+        now = self.clock()
+        if now >= next_refresh:
+            try:
+                self.refresh_universe(now)
+                next_refresh = now + self.rec["universe_refresh_s"]
+            except Exception as e:  # noqa: BLE001
+                log.warning("universe refresh failed, retry in %ds: %s",
+                            REFRESH_RETRY_S, e)
+                next_refresh = now + REFRESH_RETRY_S
+        if now >= next_books:
+            self.poll_books(now)
+            next_books = now + self.rec["book_poll_s"]
+        if now >= next_trades:
+            self.poll_trades(now)
+            next_trades = now + self.rec["trades_poll_s"]
+        self._beat()
+        return next_refresh, next_books, next_trades

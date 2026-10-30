@@ -10,12 +10,14 @@ def test_spawn_kwargs_per_platform():
     assert cli.spawn_kwargs("linux") == {"start_new_session": True}
 
 
-def test_stop_creates_kill_and_times_out_cleanly(tmp_path, monkeypatch, capsys):
+def test_stop_timeout_leaves_kill_for_the_loop(tmp_path, monkeypatch, capsys):
     shutil.copy(Path("config.yaml"), tmp_path / "config.yaml")
     seen = []
     monkeypatch.setattr(cli, "STOP_WAIT_S", 0.2)
     monkeypatch.setattr(cli, "_sleep", lambda s: seen.append((tmp_path / "out" / "KILL").exists()))
     cli.main(["stop"], root=tmp_path)
     assert seen and all(seen)                       # KILL existed while waiting
-    assert "did not confirm" in capsys.readouterr().out
-    assert not (tmp_path / "out" / "KILL").exists()
+    assert "still stopping" in capsys.readouterr().out
+    # the request stands: a busy loop stops after its current request, and
+    # `start` clears a stale KILL itself
+    assert (tmp_path / "out" / "KILL").exists()

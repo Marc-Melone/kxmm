@@ -23,6 +23,9 @@ def loop_state(con, now: float, stale_after: float) -> tuple[str, float | None]:
     if hb is None:
         return "STOPPED", None
     age = now - hb
+    stopped = db.kv_get(con, "stopped")
+    if stopped is not None and float(stopped) >= hb:       # clean exit after its last beat
+        return "STOPPED", age
     return ("RUNNING" if age < stale_after else "STOPPED"), age
 
 
