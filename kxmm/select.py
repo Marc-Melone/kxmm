@@ -88,7 +88,8 @@ def prefilter(programs: list[dict], markets: dict[str, dict], series: dict[str, 
 
 
 def shortlist(cands: list[Candidate], n: int) -> list[Candidate]:
-    return sorted(cands, key=lambda c: c.daily_pool_usd, reverse=True)[:n]
+    # ticker breaks ties, so equal pools don't reshuffle the cutoff every hour
+    return sorted(cands, key=lambda c: (-c.daily_pool_usd, c.ticker))[:n]
 
 
 def score(cand: Candidate, book: Book, cfg: dict) -> Scored | None:

@@ -14,13 +14,14 @@ from . import db
 from .book import Book
 from .kalshi_public import NotFound
 from .keepawake import keep_awake
-from .select import choose, prefilter, score, shortlist
+from .select import Scored, choose, prefilter, score, shortlist
 
 log = logging.getLogger("kxmm.recorder")
 
 SERIES_TTL_S = 86400
 REFRESH_RETRY_S = 300
 SUMMARY_EVERY_S = 600
+MAX_FETCH_FAIL_SHARE = 0.2   # more failed scoring fetches than this = failed refresh
 
 
 class _StopRequested(BaseException):
@@ -81,20 +82,39 @@ class Recorder:
         # series only for markets that pass every other rule
         needed = {c.series_ticker for c in prefilter(programs, markets, {}, now, self.cfg)}
         series = self._series_for(needed, now)
-        cands = shortlist(prefilter(programs, markets, series, now, self.cfg),
-                          self.rec["shortlist_n"])
-        scored = []
+        passing = prefilter(programs, markets, series, now, self.cfg)
+        cands = shortlist(passing, self.rec["shortlist_n"])
+        listed = {c.ticker for c in cands}
+        # sticky: current members that still pass are scored even outside the shortlist
+        cands += [c for c in passing if c.ticker in self.universe and c.ticker not in listed]
+        scored, failed = [], 0
         for c in cands:
             try:
-                s = score(c, Book.from_orderbook(self.client.orderbook(c.ticker)), self.cfg)
+                raw = self.client.orderbook(c.ticker)
             except Exception as e:  # noqa: BLE001
-                log.debug("score %s skipped: %s", c.ticker, e)
-                s = None
+                failed += 1
+                log.debug("score %s: book fetch failed: %s", c.ticker, e)
+                if c.ticker in self.universe:      # a blip never evicts a member
+                    scored.append(Scored(cand=c, share_yes=0.0, share_no=0.0,
+                                         est_daily_usd=0.0, collateral_usd=0.0, yield_=0.0))
+                self._beat()
+                continue
+            s = score(c, Book.from_orderbook(raw), self.cfg)
             if s:
                 scored.append(s)
             self._beat()
+        if cands and failed > MAX_FETCH_FAIL_SHARE * len(cands):
+            raise RuntimeError(f"{failed}/{len(cands)} book fetches failed; "
+                               "keeping the current universe")
+        old_universe = list(self.universe)
         self.universe = choose(scored, self.universe, self.rec["max_markets"],
                                self.rec["max_per_event"])
+        passing_tickers = {c.ticker for c in passing}
+        for t in old_universe:
+            if t not in self.universe:
+                why = ("book below the reward target or maker-fee rule" if t in passing_tickers
+                       else "failed a filter (closed, mid out of range, program ending, or delisted)")
+                log.info("universe: dropped %s: %s", t, why)
         by = {s.cand.ticker: s for s in scored}
         db.upsert_programs(self.con, programs, now)
         db.upsert_markets(self.con, [markets[t] for t in self.universe if t in markets],

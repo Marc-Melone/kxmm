@@ -75,3 +75,11 @@ def test_choose_is_sticky_and_caps_events():
     assert sum(t.startswith("A") for t in chosen) == 2
     assert len(chosen) == 6
     assert chosen[1:3] == ["A0", "A1"]
+
+
+def test_shortlist_breaks_pool_ties_by_ticker():
+    from kxmm.select import shortlist
+    tied = [cand(pool=28.34), cand(pool=28.34), cand(pool=50.0)]
+    tied[0].ticker, tied[1].ticker, tied[2].ticker = "KXRAIN-B", "KXRAIN-A", "TOP"
+    assert [c.ticker for c in shortlist(tied, 2)] == ["TOP", "KXRAIN-A"]
+    assert [c.ticker for c in shortlist(list(reversed(tied)), 2)] == ["TOP", "KXRAIN-A"]

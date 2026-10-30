@@ -56,6 +56,35 @@ def test_refresh_universe_selects_and_logs(tmp_path):
     assert con.execute("SELECT COUNT(*) FROM selections").fetchone()[0] == 1
 
 
+def test_refresh_keeps_current_member_outside_shortlist(tmp_path, monkeypatch):
+    c = FakeClient([mk("BIG", "EB-1", 0.50, 10, 72, 90), mk("SMALL", "ES-1", 0.50, 10, 72, 20)])
+    rec, _ = recorder(tmp_path, c)
+    monkeypatch.setitem(rec.rec, "shortlist_n", 1)       # SMALL ranks outside the shortlist
+    rec.universe = ["SMALL"]
+    assert "SMALL" in rec.refresh_universe(NOW)
+
+
+def test_refresh_keeps_current_member_when_its_book_fetch_fails(tmp_path):
+    c = FakeClient([mk(f"K{i}", f"E{i}-1", 0.50, 10, 72, 50 - i) for i in range(6)])
+    c.fail["K5"] = Unavailable("blip")
+    rec, _ = recorder(tmp_path, c)
+    rec.universe = ["K5"]
+    assert "K5" in rec.refresh_universe(NOW)
+
+
+def test_refresh_fails_whole_when_most_fetches_fail(tmp_path):
+    import pytest
+    c = FakeClient([mk(f"K{i}", f"E{i}-1", 0.50, 10, 72, 50) for i in range(5)])
+    for i in range(5):
+        c.fail[f"K{i}"] = Unavailable("network down")
+    rec, con = recorder(tmp_path, c)
+    rec.universe = ["OLD1", "OLD2"]
+    with pytest.raises(RuntimeError):
+        rec.refresh_universe(NOW)
+    assert rec.universe == ["OLD1", "OLD2"]
+    assert con.execute("SELECT COUNT(*) FROM selections").fetchone()[0] == 0
+
+
 def test_poll_books_stores_changes_only(tmp_path):
     t = {"now": NOW}
     rec, con = recorder(tmp_path, FakeClient(), clock=lambda: t["now"])
