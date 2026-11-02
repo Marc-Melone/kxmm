@@ -77,6 +77,43 @@ How to read the report:
 
 Results are also saved to `out\sim.db` and `out\sim_market_days.csv`. To run it on the Mac instead, copy `out\kxmm.db` across, ideally while the recorder is stopped, and run `./kxmm.sh sim --db <copy>`.
 
+## Phase 3: demo trading (Gate B by Nov 24)
+
+The trader runs the quoting rules on Kalshi's **demo exchange** (mock money). It cannot reach the real exchange: the code refuses any non-demo address. Run it on the Windows machine next to the recorder; it uses its own folder, `out\trade\`.
+
+**One-time setup:**
+1. Make a demo account at https://demo.kalshi.co (it is separate from your real Kalshi login).
+2. In the demo site's account settings, create an **API key** (choose **Ed25519** if asked) on the Windows machine. Save the downloaded `.pem` **outside** the kxmm folder, e.g. `C:\Users\<you>\keys\kalshi-demo.pem`.
+3. Copy `.env.example` to `.env` in the kxmm folder and fill in both lines: the key ID shown by Kalshi and the path to the `.pem`. Then lock the file down:
+   ```powershell
+   icacls .env /inheritance:r /grant:r "$env:USERNAME:(R,W)"
+   ```
+   Never paste the key or its ID into a chat.
+
+**Commands:**
+
+| Command | What it does |
+|---|---|
+| `.\kxmm.ps1 trade start` | Start the demo trader (cancels any open demo orders first) |
+| `.\kxmm.ps1 trade status` | Running or stopped, last 24 h, positions, drills, **GATE B** |
+| `.\kxmm.ps1 trade stop` | Stop: cancel all demo orders and exit |
+| `.\kxmm.ps1 trade panic` | Cancel all demo orders right now, even if the trader has died |
+| `.\kxmm.ps1 trade drill <name>` | Run one safety drill (list below) |
+
+**Drills.** Gate B needs each one to pass at least once within the 5 clean days. Run them in this order:
+1. Without the trader running:
+   - `orders`: place, amend and cancel.
+   - `group`: an order-group trigger cancels the group's orders.
+   - `fill`: buys 1 contract from someone else's demo order and checks the fill and position.
+2. Run `trade start`, wait 2 minutes, then:
+   - `halt`
+   - `network`: 60 s of simulated network loss.
+   - `ratelimit`: 60 s of simulated rate limiting.
+   - `reconcile`: a fake position mismatch must halt the trader.
+   - `kill`: stops the trader. Run `trade start` again afterwards.
+
+**Gate B** passes after 5 consecutive UTC days, each with 20+ hours of trader uptime and no errors or reconcile mismatches, with every drill passed in that window. Network and rate-limit outages count as handled, not as errors.
+
 ## Layout
 
 ```

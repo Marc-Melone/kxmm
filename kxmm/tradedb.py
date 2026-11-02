@@ -14,6 +14,7 @@ CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS drills(id INTEGER PRIMARY KEY, ts REAL, name TEXT, passed INTEGER,
   detail TEXT);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS uptime(minute INTEGER PRIMARY KEY);
 """
 
 
@@ -62,4 +63,6 @@ def kv_set(con, k: str, v: str) -> None:
 
 
 def heartbeat(con, ts: float) -> None:
+    """Liveness for `status`, plus one row per minute the trader was up (Gate B)."""
+    con.execute("INSERT OR IGNORE INTO uptime VALUES(?)", (int(ts // 60),))
     kv_set(con, "heartbeat", repr(ts))
