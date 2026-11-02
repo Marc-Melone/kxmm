@@ -63,3 +63,30 @@ def _ts(s: str) -> float:
 def daily_pool_usd(program: dict) -> float:
     days = (_ts(program["end_date"]) - _ts(program["start_date"])) / 86400.0
     return program["period_reward"] / 10_000 / max(days, 1 / 24)
+
+
+def our_side_share(levels: list[tuple[float, float]], our_price: float | None,
+                   our_size: float, target_size: float, discount: float,
+                   price_ranges: list[dict]) -> float:
+    """Our share of one side's snapshot score, with our order added to the book."""
+    if our_price is None or our_size <= 0:
+        return 0.0
+    merged: dict[float, float] = {}
+    for p, s in levels:
+        merged[p] = merged.get(p, 0.0) + s
+    key = next((p for p in merged if abs(p - our_price) < 1e-9), our_price)
+    merged[key] = merged.get(key, 0.0) + our_size
+    combined = sorted(merged.items(), reverse=True)
+    side = side_score(combined, target_size, discount, price_ranges)
+    if not side.meets_target:
+        return 0.0
+    cum = 0.0
+    for p, s in combined:                     # does our level fall within the target depth?
+        if p == key:
+            break
+        cum += s
+        if cum >= target_size:
+            return 0.0
+    ticks = 0 if our_price >= side.ref_price - 1e-12 else round(
+        (side.ref_price - our_price) / tick_size(our_price, price_ranges))
+    return our_size * discount ** ticks / side.qualifying_score

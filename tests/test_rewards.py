@@ -1,6 +1,6 @@
 import pytest
 
-from kxmm.rewards import daily_pool_usd, est_share, side_score, tick_size
+from kxmm.rewards import daily_pool_usd, est_share, our_side_share, side_score, tick_size
 
 CENT = [{"start": "0.0000", "end": "1.0000", "step": "0.0100"}]
 SUBPENNY = [{"start": "0.0000", "end": "0.1000", "step": "0.0010"},
@@ -39,3 +39,17 @@ def test_daily_pool_usd():
     p = {"period_reward": 1_000_000, "start_date": "2026-10-30T00:00:00Z",
          "end_date": "2026-11-06T00:00:00Z"}
     assert daily_pool_usd(p) == pytest.approx(100 / 7)
+
+
+def test_our_share_at_reference_matches_estimate():
+    assert our_side_share(LEVELS, 0.49, 10, 1000, 0.5, CENT) == pytest.approx(10 / 660)
+
+
+def test_our_share_behind_target_depth_is_zero():
+    assert our_side_share(LEVELS, 0.40, 10, 1000, 0.5, CENT) == 0.0
+    assert our_side_share(LEVELS, None, 10, 1000, 0.5, CENT) == 0.0
+
+
+def test_our_share_discounted_one_tick_back():
+    # 100 + 150 + (300 + 10) x 0.5 + 1000 x 0.25 = 655; ours scores 10 x 0.5
+    assert our_side_share(LEVELS, 0.48, 10, 1000, 0.5, CENT) == pytest.approx(5 / 655)
