@@ -8,6 +8,7 @@ from tests.helpers import CENT, iso, raw_book
 
 CFG = load_config()
 T = 1_800_000_000
+LAG = CFG["sim"]["book_lag_s"]          # the first book counts as seen at t = LAG
 YES_OK = [(0.50, 60), (0.49, 60)]      # depth 120 >= target 100
 NO_OK = [(0.49, 60), (0.48, 60)]       # YES ask 0.51 -> mid 0.505; we quote YES 0.50, NO 0.49
 
@@ -62,7 +63,7 @@ def test_rewards_accrue_only_with_both_sides_meeting_target(tmp_path):
     # one stored book (unchanged after), polled until t+3600
     ok = run(build(tmp_path, books=[(0, YES_OK, NO_OK)], covered_until=3600))
     # our 10 of 100 qualifying score on each side -> 0.1 share; $86.40/day = $0.001/s
-    assert sum(ok.reward_by_day.values()) == pytest.approx(0.001 * 0.1 * 3600)
+    assert sum(ok.reward_by_day.values()) == pytest.approx(0.001 * 0.1 * (3600 - LAG))
     (tmp_path / "thin").mkdir()
     thin_no = [(0.49, 30)]
     thin = run(build(tmp_path / "thin", books=[(0, YES_OK, thin_no)], covered_until=3600))
@@ -76,7 +77,7 @@ def test_gap_cancels_orders_and_stops_rewards(tmp_path):
                 gaps=[(100, 200)], covered_until=300)
     r = run(con)
     assert r.fills == []                                   # the trade fell inside the gap
-    assert sum(r.quoted_s_by_day.values()) == pytest.approx(100 + (300 - 200))
+    assert sum(r.quoted_s_by_day.values()) == pytest.approx((100 - LAG) + (300 - 200))
 
 
 def test_blackout_stops_quoting(tmp_path):
@@ -104,4 +105,24 @@ def test_nested_gap_never_quotes_inside_outer_gap(tmp_path):
                 gaps=[(100, 400)], loop_gaps=[(110, 300)], covered_until=600)
     r = run(con)
     assert r.fills == []                                   # 350 is still inside [100, 400]
-    assert sum(r.quoted_s_by_day.values()) == pytest.approx(100 + (600 - 400))
+    assert sum(r.quoted_s_by_day.values()) == pytest.approx((100 - LAG) + (600 - 400))
+
+
+def test_book_that_already_shows_a_trade_does_not_double_count_queue(tmp_path):
+    # we join behind 60 at 0.50; the book at t=100 already shows the 40-lot trade
+    # stamped t=101 by the exchange (local clock behind): the queue is used once
+    after = [(0.50, 20), (0.49, 60)]
+    con = build(tmp_path, books=[(0, YES_OK, NO_OK), (100, after, NO_OK)],
+                trades=[(101, 0.50, 40, "no"), (200, 0.50, 30, "no")], covered_until=300)
+    r = run(con)
+    # the 40-lot at t=101 only eats the queue (60 -> 20); the 30-lot at t=200 fills our 10
+    assert [(f.ts - T, round(f.size, 6)) for f in r.fills] == [(200, 10)]
+
+
+def test_one_sweep_fills_an_order_once(tmp_path):
+    # Kalshi prints one taker sweep as several trades with the same timestamp
+    con = build(tmp_path, books=[(0, YES_OK, NO_OK)],
+                trades=[(20, 0.49, 10, "no"), (20, 0.48, 10, "no"), (20, 0.47, 10, "no")],
+                covered_until=300)
+    r = run(con)
+    assert sum(f.size for f in r.fills) == pytest.approx(10)

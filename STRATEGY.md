@@ -45,6 +45,10 @@ live test; live fills, not this simulation, decide the question.
 - A new price puts us at the back of the queue.
 - A taker buying NO hits YES bids; a taker buying YES hits NO bids at 1 − YES
   price.
+- Trades sharing a timestamp are one sweep: all of them are applied before we
+  requote. At equal times trades come before books, and every book counts as
+  seen 2 s after its local timestamp (`book_lag_s`), so a book can never use
+  up queue a later-stamped trade also uses.
 - Fees: maker fee round-up(0.0175 × C × P × (1 − P)) on series with maker
   fees; we never take liquidity.
 
@@ -86,4 +90,6 @@ segment. Tuning may use only the first 5 recorded days.
 
 ## Changelog
 
-(none)
+- 2026-11-02, before any recorded day was simulated (still 1.0.0): from the
+  code review: gaps are merged before replay; trades before books at equal
+  times plus a 2 s book lag; a sweep's trades are applied before requoting.

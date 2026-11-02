@@ -40,6 +40,7 @@ sim:                         # Phase 2 — pre-registered in STRATEGY.md; change
   gate_a_min_markets: 3        # Gate A: net > 0 in at least this many markets
   gate_a_min_days: 10          # ... over at least this many recorded days
   live_markets: 5              # markets the live test will quote
+  book_lag_s: 2                # books count as seen this long after their local timestamp
 output:
   db_path: out/kxmm.db
   log_path: out/kxmm.log

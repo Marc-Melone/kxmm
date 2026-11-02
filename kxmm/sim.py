@@ -15,7 +15,7 @@ from .book import Book
 from .fair import EwmaVol, logit, microprice
 from .fills import Resting, on_book, on_trade, place
 from .quoting import make_quotes
-from .replay import MidSeries, events, market_meta, program_at, programs_for
+from .replay import EVENT_ORDER, MidSeries, events, market_meta, program_at, programs_for
 from .rewards import our_side_share, side_score, tick_size
 
 MAKER_FEE_RATE = 0.0175
@@ -120,7 +120,13 @@ def simulate_market(con, ticker: str, t0: float, t1: float, cfg: dict) -> Market
                 continue                              # keep queue position
             orders[side] = place(side, price, size, book)
 
-    for e in events(con, ticker, t0, t1):
+    evs = events(con, ticker, t0, t1)
+    for e in evs:
+        if e.kind == "book":       # local poll time can trail the exchange's trade stamps
+            e.ts += scfg["book_lag_s"]
+    evs.sort(key=lambda e: (e.ts, EVENT_ORDER[e.kind]))
+
+    for i, e in enumerate(evs):
         accrue(e.ts)
         last_ts = e.ts
         if e.kind == "book":
@@ -157,7 +163,9 @@ def simulate_market(con, ticker: str, t0: float, t1: float, cfg: dict) -> Market
                 fills.append(Fill(ticker, e.ts, side, o.price, c, fee, position_after=position))
                 if o.size <= 1e-9:
                     orders.pop(side)
-            requote(e.ts)
+            nxt = evs[i + 1] if i + 1 < len(evs) else None
+            if not (nxt and nxt.kind == "trade" and nxt.ts == e.ts):
+                requote(e.ts)              # a sweep's prints share a timestamp: requote after all
 
     # quoting continues past the last event until the last confirmed poll
     r = con.execute("SELECT last_ok FROM poll_state WHERE ticker=?", (ticker,)).fetchone()

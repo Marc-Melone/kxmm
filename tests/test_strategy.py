@@ -16,6 +16,7 @@ def test_sim_config_values():
     assert s["bootstrap_n"] == 10000 and s["bootstrap_seed"] == 7
     assert s["gate_a_min_markets"] == 3 and s["gate_a_min_days"] == 10
     assert s["live_markets"] == 5
+    assert s["book_lag_s"] == 2
 
 
 def test_strategy_md_version_matches_config():

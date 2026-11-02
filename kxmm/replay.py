@@ -15,7 +15,8 @@ from .book import Book
 from .db import iso_ts
 
 MAKER_FEE_TYPE = "quadratic_with_maker_fees"
-_ORDER = {"gap_end": 0, "book": 1, "trade": 2, "gap_start": 3}
+# at equal times: trades before books (a book may already show them), gaps outermost
+EVENT_ORDER = {"gap_end": 0, "trade": 1, "book": 2, "boundary": 3, "gap_start": 4}
 
 
 def open_readonly(path: str | Path) -> sqlite3.Connection:
@@ -99,7 +100,7 @@ def events(con, ticker: str, t0: float, t1: float) -> list[Event]:
         out.append(Event(max(start, t0), "gap_start"))   # a replay can start inside a gap
         if end <= t1:
             out.append(Event(end, "gap_end"))
-    return sorted(out, key=lambda e: (e.ts, _ORDER[e.kind]))
+    return sorted(out, key=lambda e: (e.ts, EVENT_ORDER[e.kind]))
 
 
 def merged_gaps(con, keys: tuple[str, ...]) -> list[tuple[float, float]]:
