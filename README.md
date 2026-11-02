@@ -56,6 +56,24 @@ Phase 1 is a **recorder**. It picks up to 40 Kalshi markets that pay liquidity r
 
 After a reboot (Windows Update does this on its own; set active hours or pause updates for the test), run `.\kxmm.ps1 start` again. The downtime shows up as a gap, and the 24-hour Phase 1 clock restarts from there.
 
+## Phase 2: simulate (Gate A on Nov 16)
+
+`sim` replays the recording through the pre-registered strategy in `STRATEGY.md` and prints the Gate A verdict. It only **reads** the recorder's database, so it is safe to run while the recorder is running:
+
+```powershell
+.\kxmm.ps1 sim                    # whole recording, with settlement lookups
+.\kxmm.ps1 sim --from 2026-11-04  # from a UTC day on
+.\kxmm.ps1 sim --offline          # no network: settlements left unknown
+```
+
+How to read the report:
+- **Per market:** simulated net for each recorded market. Gate A needs at least 3 positive markets.
+- **Daily totals:** the agreed test. `beyond chance: YES` means the 97.5% lower bound of the mean daily P&L is above zero. "trading only" shows the result without rewards.
+- **LIVE TARGET:** the fills needed for t ≈ 2 at the simulated edge, and about how many days 5 live markets take to get them.
+- **GATE A:** `PASS`, or `NOT YET` with the reasons.
+
+Results are also saved to `out\sim.db` and `out\sim_market_days.csv`. To run it on the Mac instead, copy `out\kxmm.db` across, ideally while the recorder is stopped, and run `./kxmm.sh sim --db <copy>`.
+
 ## Layout
 
 ```

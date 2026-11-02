@@ -126,5 +126,7 @@ def tickers_in(con, t0: float, t1: float) -> list[str]:
         "SELECT DISTINCT ticker FROM books WHERE ts BETWEEN ? AND ? ORDER BY ticker", (t0, t1))]
 
 
-def recorded_days(con) -> int:
-    return con.execute("SELECT COUNT(DISTINCT date(ts, 'unixepoch')) FROM books").fetchone()[0]
+def recorded_days(con, t0: float | None = None, t1: float | None = None) -> int:
+    return con.execute("SELECT COUNT(DISTINCT date(ts, 'unixepoch')) FROM books"
+                       " WHERE ts BETWEEN ? AND ?",
+                       (t0 if t0 is not None else 0, t1 if t1 is not None else 1e12)).fetchone()[0]

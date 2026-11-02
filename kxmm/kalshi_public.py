@@ -105,6 +105,9 @@ class KalshiPublic:
     def series(self, ticker: str) -> dict:
         return self._get("/series/" + ticker).get("series") or {}
 
+    def market(self, ticker: str) -> dict:
+        return self._get("/markets/" + ticker).get("market") or {}
+
     def orderbook(self, ticker: str) -> dict:
         return self._get(f"/markets/{ticker}/orderbook").get("orderbook_fp") or {}
 

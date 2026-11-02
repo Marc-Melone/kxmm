@@ -119,3 +119,9 @@ def test_client_calls_on_attempt_after_every_try():
     c.on_attempt = lambda: calls.append(1)
     c.series("KXSTREAMARRAY")
     assert len(calls) == 2                      # the failed try counts too
+
+
+def test_market_returns_market_object():
+    c, s = client([(200, fixture("market.json"))])
+    assert c.market("KXSTREAMARRAY-26NOV08-T80")["ticker"] == "KXSTREAMARRAY-26NOV08-T80"
+    assert s.requests[0][0].endswith("/markets/KXSTREAMARRAY-26NOV08-T80")

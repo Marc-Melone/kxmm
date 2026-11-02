@@ -1,4 +1,4 @@
-"""kxmm control: start | stop | status | log | test | run  (Windows and macOS).
+"""kxmm control: start | stop | status | log | test | run | sim  (Windows and macOS).
 
 No PIDs or signals: the DB heartbeat says whether the loop is alive, and
 `out/KILL` asks it to stop (Windows can't SIGTERM a console process). The loop
@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db
@@ -98,6 +98,28 @@ def cmd_log(root: Path, cfg: dict) -> None:
           end="")
 
 
+def _utc_day(s: str, end: bool = False) -> float:
+    ts = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    return ts + 86399.999 if end else ts
+
+
+def cmd_sim(root: Path, cfg: dict, argv: list[str]) -> None:
+    import argparse
+    from .kalshi_public import KalshiPublic
+    from .simrun import run
+    ap = argparse.ArgumentParser(prog="kxmm sim", description="replay the recording; Gate A report")
+    ap.add_argument("--db", default=str(root / cfg["output"]["db_path"]))
+    ap.add_argument("--from", dest="t0", help="first UTC day, YYYY-MM-DD")
+    ap.add_argument("--to", dest="t1", help="last UTC day, YYYY-MM-DD")
+    ap.add_argument("--offline", action="store_true", help="skip settlement lookups")
+    a = ap.parse_args(argv)
+    api = cfg["api"]
+    client = None if a.offline else KalshiPublic(api["base_url"], api["rate_per_sec"],
+                                                 api.get("timeout_s", 20), api.get("max_attempts", 4))
+    print(run(cfg, Path(a.db), root / "out", _utc_day(a.t0) if a.t0 else None,
+              _utc_day(a.t1, end=True) if a.t1 else None, client=client))
+
+
 def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     root = Path(root or Path(__file__).resolve().parent.parent)
@@ -108,9 +130,12 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         from .loop import main as loop_main
         loop_main(["--config", str(root / "config.yaml")])
         return 0
+    if cmd == "sim":
+        cmd_sim(root, load_config(root / "config.yaml"), argv[1:])
+        return 0
     handlers = {"start": cmd_start, "stop": cmd_stop, "status": cmd_status, "log": cmd_log}
     if cmd not in handlers:
-        print("usage: kxmm start|stop|status|log|test|run")
+        print("usage: kxmm start|stop|status|log|test|run|sim")
         return 2
     handlers[cmd](root, load_config(root / "config.yaml"))
     return 0
