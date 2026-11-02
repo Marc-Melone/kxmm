@@ -116,3 +116,16 @@ def test_mid_series_none_outside_polled_coverage(tmp_path):
     assert mids.at(T + 420) == pytest.approx(0.485)      # book at 400: 0.47 / ask 0.50
     assert mids.at(T + 500) is None                       # nothing observed after 450
     assert mids.last_known(T + 500) == pytest.approx(0.485)
+
+
+def test_covered_hours_by_day_counts_loop_uptime(tmp_path):
+    from kxmm.replay import covered_hours_by_day
+    d0 = T - T % 86400                                    # a UTC midnight
+    con = db.connect(tmp_path / "rec.db")
+    db.mark_poll(con, "K", d0, 10**9)
+    db.mark_poll(con, "K", d0 + 2 * 86400, 10**9)         # polled for exactly two days
+    db.mark_poll(con, "trades:K", d0 - 86400, 10**9)      # trade polls don't define uptime
+    db.add_gap(con, "*", d0 + 86400 + 3600, d0 + 86400 + 6 * 3600)   # 5 h down on day 2
+    con.close()
+    hours = covered_hours_by_day(open_readonly(tmp_path / "rec.db"), 0, 1e12)
+    assert list(hours.values()) == [pytest.approx(24), pytest.approx(19)]

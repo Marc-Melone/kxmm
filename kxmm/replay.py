@@ -9,6 +9,7 @@ import bisect
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .book import Book
@@ -157,3 +158,24 @@ def recorded_days(con, t0: float | None = None, t1: float | None = None) -> int:
     return con.execute("SELECT COUNT(DISTINCT date(ts, 'unixepoch')) FROM books"
                        " WHERE ts BETWEEN ? AND ?",
                        (t0 if t0 is not None else 0, t1 if t1 is not None else 1e12)).fetchone()[0]
+
+
+def covered_hours_by_day(con, t0: float, t1: float) -> dict[str, float]:
+    """Hours per UTC day the recorder loop was up: from the first to the last
+    good market poll, minus loop-down ('*') gaps. Gate A counts a day only
+    with enough of these (STRATEGY.md 1.1.0)."""
+    lo, hi = con.execute("SELECT MIN(first_ok), MAX(last_ok) FROM poll_state"
+                         " WHERE ticker NOT LIKE 'trades:%'").fetchone()
+    if lo is None:
+        return {}
+    lo, hi = max(lo, t0), min(hi, t1)
+    down = merged_gaps(con, ("*",))
+    out: dict[str, float] = {}
+    day = lo - lo % 86400
+    while day < hi:
+        a, b = max(day, lo), min(day + 86400, hi)
+        secs = (b - a) - sum(max(0.0, min(b, e) - max(a, s)) for s, e in down)
+        if secs > 0:
+            out[datetime.fromtimestamp(day, timezone.utc).strftime("%Y-%m-%d")] = secs / 3600
+        day += 86400
+    return out
