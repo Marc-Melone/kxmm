@@ -85,3 +85,22 @@ def test_trade_and_loop_gaps_also_pause_replay(tmp_path):
     con.close()
     kinds = [(e.kind, e.ts - T) for e in events(open_readonly(path), "K", T + 450, T + 900)]
     assert kinds == [("gap_start", 500), ("gap_end", 600), ("gap_start", 700), ("gap_end", 800)]
+
+
+def test_nested_gaps_merge_into_one(tmp_path):
+    # the recorder's real pattern: loop gaps ('*') nested inside a market's own gap
+    path = make_db(tmp_path)
+    con = db.connect(path)
+    db.add_gap(con, "K", T + 1000, T + 1400)
+    db.add_gap(con, "*", T + 1010, T + 1300)
+    db.add_gap(con, "*", T + 1320, T + 1350)
+    db.add_gap(con, "trades:K", T + 1380, T + 1450)      # overlaps the end: extends it
+    con.close()
+    kinds = [(e.kind, e.ts - T) for e in events(open_readonly(path), "K", T + 900, T + 2000)]
+    assert kinds == [("gap_start", 1000), ("gap_end", 1450)]
+
+
+def test_replay_starting_inside_a_gap_starts_in_gap(tmp_path):
+    kinds = [(e.kind, e.ts - T) for e in events(open_readonly(make_db(tmp_path)), "K",
+                                                T + 250, T + 1000)]
+    assert kinds[:2] == [("gap_start", 250), ("gap_end", 300)]

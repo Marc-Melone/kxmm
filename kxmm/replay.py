@@ -91,15 +91,29 @@ def events(con, ticker: str, t0: float, t1: float) -> list[Event]:
                                                 r["taker_side"]))
             for r in con.execute("SELECT * FROM trades WHERE ticker=? AND ts BETWEEN ? AND ?",
                                  (ticker, t0, t1))]
-    # a gap in the books, the trades (fills unknowable) or the whole loop pauses replay
-    for g in con.execute("SELECT start_ts, end_ts FROM gaps WHERE ticker IN (?, ?, '*')"
-                         " AND end_ts >= ? AND start_ts <= ?",
-                         (ticker, f"trades:{ticker}", t0, t1)):
-        if t0 <= g["start_ts"] <= t1:
-            out.append(Event(g["start_ts"], "gap_start"))
-        if t0 <= g["end_ts"] <= t1:
-            out.append(Event(g["end_ts"], "gap_end"))
+    # a gap in the books, the trades (fills unknowable) or the whole loop pauses
+    # replay; they nest and overlap, so they are merged first
+    for start, end in merged_gaps(con, (ticker, f"trades:{ticker}", "*")):
+        if end < t0 or start > t1:
+            continue
+        out.append(Event(max(start, t0), "gap_start"))   # a replay can start inside a gap
+        if end <= t1:
+            out.append(Event(end, "gap_end"))
     return sorted(out, key=lambda e: (e.ts, _ORDER[e.kind]))
+
+
+def merged_gaps(con, keys: tuple[str, ...]) -> list[tuple[float, float]]:
+    """Union of the recorded gaps for these gap keys, as sorted disjoint intervals."""
+    marks = ",".join("?" * len(keys))
+    rows = sorted((r[0], r[1]) for r in con.execute(
+        f"SELECT start_ts, end_ts FROM gaps WHERE ticker IN ({marks})", keys))
+    out: list[list[float]] = []
+    for s, e in rows:
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [(s, e) for s, e in out]
 
 
 class MidSeries:
@@ -111,8 +125,7 @@ class MidSeries:
                                      (ticker,))]
         self._ts = [t for t, _ in rows]
         self._mid = [m for _, m in rows]
-        self._gaps = [(g["start_ts"], g["end_ts"]) for g in con.execute(
-            "SELECT start_ts, end_ts FROM gaps WHERE ticker IN (?, '*')", (ticker,))]
+        self._gaps = merged_gaps(con, (ticker, "*"))
 
     def at(self, ts: float) -> float | None:
         if any(s <= ts < e for s, e in self._gaps):

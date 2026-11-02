@@ -12,7 +12,8 @@ YES_OK = [(0.50, 60), (0.49, 60)]      # depth 120 >= target 100
 NO_OK = [(0.49, 60), (0.48, 60)]       # YES ask 0.51 -> mid 0.505; we quote YES 0.50, NO 0.49
 
 
-def build(tmp_path, books, trades=(), gaps=(), close_days=10, covered_until=None):
+def build(tmp_path, books, trades=(), gaps=(), close_days=10, covered_until=None,
+          loop_gaps=()):
     """books: [(dt, yes_levels, no_levels)], trades: [(dt, yes_price, count, taker_side)].
     Like the recorder, an unchanged book is not stored again; covered_until is the
     last successful poll (poll_state.last_ok)."""
@@ -32,6 +33,8 @@ def build(tmp_path, books, trades=(), gaps=(), close_days=10, covered_until=None
                            "taker_side": side} for i, (dt, p, c, side) in enumerate(trades)])
     for a, b in gaps:
         db.add_gap(con, "K", T + a, T + b)
+    for a, b in loop_gaps:
+        db.add_gap(con, "*", T + a, T + b)
     if covered_until is not None:
         db.mark_poll(con, "K", T + books[0][0], 10**9)
         db.mark_poll(con, "K", T + covered_until, 10**9)
@@ -94,3 +97,11 @@ def test_inventory_cap_pulls_adding_side(tmp_path):
 def test_maker_fee_rounds_up_to_the_cent():
     assert maker_fee(10, 0.50) == pytest.approx(0.05)      # 0.04375 -> 5 cents
     assert maker_fee(1, 0.50) == pytest.approx(0.01)       # 0.0044 -> 1 cent
+
+
+def test_nested_gap_never_quotes_inside_outer_gap(tmp_path):
+    con = build(tmp_path, books=[(0, YES_OK, NO_OK)], trades=[(350, 0.40, 50, "no")],
+                gaps=[(100, 400)], loop_gaps=[(110, 300)], covered_until=600)
+    r = run(con)
+    assert r.fills == []                                   # 350 is still inside [100, 400]
+    assert sum(r.quoted_s_by_day.values()) == pytest.approx(100 + (600 - 400))
