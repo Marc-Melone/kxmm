@@ -17,6 +17,7 @@ from . import tradedb
 from .book import Book
 from .db import iso_ts
 from .fair import EwmaVol, logit, microprice
+from .kalshi_public import Unavailable
 from .keepawake import keep_awake
 from .orders import LiveOrder, from_book, plan_actions, to_book
 from .quoting import Quotes, make_quotes
@@ -57,6 +58,7 @@ class Trader:
         self.next_status = self.next_reconcile = 0.0
         self.trading_ok = True
         self.halted = False
+        self.stopped = False
         self.paused_until = 0.0
         self.day_key = self.week_key = None
         self.day_start = self.week_start = 0.0
@@ -69,9 +71,15 @@ class Trader:
         (log.warning if kind in ("error", "halt", "reconcile_bad", "stale") else log.info)(
             "%s %s", kind, detail)
 
+    def _cancel_all(self, why: str) -> None:
+        try:
+            self.client.cancel_all()
+        except Unavailable as e:                  # offline: Kalshi's own pause/group rails hold
+            self._event("outage", f"cancel_all ({why}): {e}")
+
     def _write_halt(self, reason: str) -> None:
         self.halt.write_text(reason + "\n", encoding="utf-8")
-        self.client.cancel_all()
+        self._cancel_all("halt")
         self.halted = True
         self._event("halt", reason)
 
@@ -169,7 +177,10 @@ class Trader:
             if now - self.book_ts.get(t, -math.inf) > self.tc["stale_book_s"]:
                 if t not in self.stale:
                     self.stale.add(t)
-                    self._cancel_market(resting, t)
+                    try:
+                        self._cancel_market(resting, t)
+                    except Unavailable as e:
+                        self._event("outage", f"{t} stale cancel: {e}")
                     self._event("stale", f"{t}: no book for {self.tc['stale_book_s']} s")
                 continue
             if not quoting:
@@ -206,6 +217,8 @@ class Trader:
                 else:
                     self.client.batch_cancel([a.order_id])
                     self.known_ids.discard(a.order_id)
+            except Unavailable as e:              # network / rate limit: handled, not a bug
+                self._event("outage", f"{t} {a.kind} {a.side}: {e}")
             except Exception as e:  # noqa: BLE001 — one failed action never stops the loop
                 self._event("error", f"{t} {a.kind} {a.side}: {e}")
 
@@ -248,25 +261,33 @@ class Trader:
         remote_pos = {p["ticker"]: float(p["position_fp"]) for p in self.client.positions()}
         bad = reconcile(local, remote_pos, self.known_ids, remote_ids)
         if bad:
-            self._event("reconcile_bad", "; ".join(bad))
+            drill = (self.dir / "FAULT_PHANTOM").exists()
+            self._event("reconcile_drill" if drill else "reconcile_bad", "; ".join(bad))
             self._write_halt("reconcile: " + "; ".join(bad))
         else:
             self._event("reconcile_ok", "")
 
+    def tick(self) -> bool:
+        """One pass of the loop. False once KILL has stopped it."""
+        if self.kill.exists():
+            self._cancel_all("stop")
+            self._event("stop", "KILL")
+            tradedb.kv_set(self.con, "stopped", repr(self.clock()))
+            self.kill.unlink(missing_ok=True)
+            self.stopped = True
+            return False
+        try:
+            self.cycle(self.clock())
+        except Unavailable as e:                  # Kalshi unreachable: handled, retried next pass
+            self._event("outage", f"cycle: {e}")
+        except Exception as e:  # noqa: BLE001 — record, keep going
+            self._event("error", f"cycle: {type(e).__name__}: {e}")
+        return True
+
     def run(self) -> None:
         with self.awake():
             self.start()
-            while True:
-                if self.kill.exists():
-                    self.client.cancel_all()
-                    self._event("stop", "KILL")
-                    tradedb.kv_set(self.con, "stopped", repr(self.clock()))
-                    self.kill.unlink(missing_ok=True)
-                    return
-                try:
-                    self.cycle(self.clock())
-                except Exception as e:  # noqa: BLE001 — record, keep going
-                    self._event("error", f"cycle: {type(e).__name__}: {e}")
+            while self.tick():
                 wake = self.clock() + self.tc["book_poll_s"]
                 while self.clock() < wake and not self.kill.exists():
                     self.sleep(min(1.0, wake - self.clock()))

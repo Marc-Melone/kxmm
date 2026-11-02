@@ -9,7 +9,7 @@ from tests.helpers import CENT, iso
 class FakeTradeClient:
     is_demo = True
 
-    def __init__(self, books=None, markets=None, now=lambda: 1_800_000_000.0):
+    def __init__(self, books=None, markets=None, now=lambda: 1_800_000_000.0, fault_dir=None):
         self.books = dict(books or {})          # ticker -> orderbook_fp raw
         self.market_rows = list(markets or [])
         self.orders: dict[str, dict] = {}
@@ -24,6 +24,18 @@ class FakeTradeClient:
         self.now = now
         self._ids = itertools.count(1)
         self.on_attempt = None
+        self.fault_dir = fault_dir
+
+    def __getattribute__(self, name):
+        # like KalshiTrade's drill hook: FAULT_NET / FAULT_429 make every API call fail
+        attr = object.__getattribute__(self, name)
+        fd = object.__getattribute__(self, "__dict__").get("fault_dir")
+        if fd and callable(attr) and not name.startswith("_") and name not in ("fill",):
+            if (fd / "FAULT_NET").exists() or (fd / "FAULT_429").exists():
+                def fail(*a, **k):
+                    raise Unavailable(f"{name}: drill fault")
+                return fail
+        return attr
 
     # --- orders ---
     def create_order(self, ticker, book_side, price, count, client_order_id, order_group_id):

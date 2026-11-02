@@ -167,6 +167,10 @@ class KalshiTrade:
         return self._request("POST", "/portfolio/order_groups/create",
                              body={"contracts_limit": int(contracts_limit)})["order_group_id"]
 
+    def trigger_order_group(self, group_id: str) -> None:
+        """Cancel every order in the group now (drills; Kalshi does this itself on a burst)."""
+        self._request("PUT", f"/portfolio/order_groups/{group_id}/trigger")
+
     def reset_order_group(self, group_id: str) -> None:
         self._request("PUT", f"/portfolio/order_groups/{group_id}/reset")
 
