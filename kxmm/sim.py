@@ -32,6 +32,7 @@ class Fill:
     fee: float
     markouts: dict[int, float | None] = field(default_factory=dict)
     position_after: float = 0.0
+    fallback: float | None = None      # primary markout at the last known mid, if unknown
 
 
 @dataclass
@@ -179,9 +180,14 @@ def simulate_market(con, ticker: str, t0: float, t1: float, cfg: dict) -> Market
         accrue(min(t1, r[0]))
 
     mids = MidSeries(con, ticker)
+    def pnl(f: Fill, m: float) -> float:
+        return (m - f.price) * f.size if f.side == "yes" else ((1 - f.price) - m) * f.size
+
     for f in fills:
         for h in scfg["markouts_s"]:
             m = mids.at(f.ts + h)
-            f.markouts[h] = None if m is None else (
-                (m - f.price) * f.size if f.side == "yes" else ((1 - f.price) - m) * f.size)
+            f.markouts[h] = None if m is None else pnl(f, m)
+        if f.markouts.get(scfg["primary_markout_s"]) is None:
+            m = mids.last_known(f.ts + scfg["primary_markout_s"])
+            f.fallback = None if m is None else pnl(f, m)
     return MarketResult(ticker, fills, reward, quoted, position, cash, mids.at(t1))

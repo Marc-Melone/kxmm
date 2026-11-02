@@ -104,3 +104,15 @@ def test_replay_starting_inside_a_gap_starts_in_gap(tmp_path):
     kinds = [(e.kind, e.ts - T) for e in events(open_readonly(make_db(tmp_path)), "K",
                                                 T + 250, T + 1000)]
     assert kinds[:2] == [("gap_start", 250), ("gap_end", 300)]
+
+
+def test_mid_series_none_outside_polled_coverage(tmp_path):
+    path = make_db(tmp_path)
+    con = db.connect(path)
+    db.mark_poll(con, "K", T + 0, 10**9)
+    db.mark_poll(con, "K", T + 450, 10**9)                # last good poll
+    con.close()
+    mids = MidSeries(open_readonly(path), "K")
+    assert mids.at(T + 420) == pytest.approx(0.485)      # book at 400: 0.47 / ask 0.50
+    assert mids.at(T + 500) is None                       # nothing observed after 450
+    assert mids.last_known(T + 500) == pytest.approx(0.485)

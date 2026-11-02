@@ -118,7 +118,8 @@ def merged_gaps(con, keys: tuple[str, ...]) -> list[tuple[float, float]]:
 
 
 class MidSeries:
-    """Mid at any time: the last book at or before it, unless inside a gap."""
+    """Mid at any time: the last book at or before it, unless inside a gap or
+    outside the market's polled coverage (poll_state first_ok..last_ok)."""
 
     def __init__(self, con, ticker: str):
         rows = [(r["ts"], Book.from_orderbook(json.loads(r["raw"])).mid())
@@ -127,8 +128,20 @@ class MidSeries:
         self._ts = [t for t, _ in rows]
         self._mid = [m for _, m in rows]
         self._gaps = merged_gaps(con, (ticker, "*"))
+        r = con.execute("SELECT first_ok, last_ok FROM poll_state WHERE ticker=?",
+                        (ticker,)).fetchone()
+        self._cover = (r[0], r[1]) if r else None      # None: no poll record (unbounded)
+
+    def last_known(self, ts: float) -> float | None:
+        """The last stored mid at or before ts, ignoring gaps and coverage."""
+        i = bisect.bisect_right(self._ts, ts) - 1
+        while i >= 0 and self._mid[i] is None:
+            i -= 1
+        return self._mid[i] if i >= 0 else None
 
     def at(self, ts: float) -> float | None:
+        if self._cover and not (self._cover[0] <= ts <= self._cover[1]):
+            return None
         if any(s <= ts < e for s, e in self._gaps):
             return None
         i = bisect.bisect_right(self._ts, ts) - 1

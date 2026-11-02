@@ -144,3 +144,11 @@ def test_program_end_stops_quoting_and_rewards(tmp_path):
     r = run(con)
     assert sum(r.quoted_s_by_day.values()) == pytest.approx(500 - LAG)
     assert sum(r.reward_by_day.values()) == pytest.approx(0.001 * 0.1 * (500 - LAG))
+
+
+def test_markout_unknown_after_recording_ends_with_fallback(tmp_path):
+    con = build(tmp_path, books=[(0, YES_OK, NO_OK)], trades=[(20, 0.49, 5, "no")],
+                covered_until=100)
+    f = run(con).fills[0]
+    assert f.markouts[600] is None                        # no data after t=100
+    assert f.fallback == pytest.approx((0.505 - 0.50) * 5)  # at the last known mid
