@@ -14,8 +14,9 @@ from datetime import datetime, timezone
 from .book import Book
 from .fair import EwmaVol, logit, microprice
 from .fills import Resting, on_book, on_trade, place
-from .quoting import make_quotes
-from .replay import EVENT_ORDER, MidSeries, events, market_meta, program_at, programs_for
+from .quoting import blackout_at, make_quotes
+from .replay import (EVENT_ORDER, Event, MidSeries, events, market_meta, program_at,
+                     programs_for)
 from .rewards import our_side_share, side_score, tick_size
 
 MAKER_FEE_RATE = 0.0175
@@ -124,6 +125,9 @@ def simulate_market(con, ticker: str, t0: float, t1: float, cfg: dict) -> Market
     for e in evs:
         if e.kind == "book":       # local poll time can trail the exchange's trade stamps
             e.ts += scfg["book_lag_s"]
+    # quoting rules change at these instants even when the book doesn't
+    bounds = [blackout_at(meta, scfg)] + [x for p in programs for x in (p.start, p.end)]
+    evs += [Event(b, "boundary") for b in bounds if t0 <= b <= t1]
     evs.sort(key=lambda e: (e.ts, EVENT_ORDER[e.kind]))
 
     for i, e in enumerate(evs):
@@ -147,6 +151,8 @@ def simulate_market(con, ticker: str, t0: float, t1: float, cfg: dict) -> Market
             for o in orders.values():
                 on_book(o, book)
             requote(e.ts)
+        elif e.kind == "boundary":
+            requote(e.ts)                  # e.g. blackout begins: make_quotes cancels
         elif e.kind == "trade" and not in_gap and book is not None:
             for side, o in list(orders.items()):
                 c = on_trade(o, e.trade)

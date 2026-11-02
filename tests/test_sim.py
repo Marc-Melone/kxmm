@@ -14,18 +14,20 @@ NO_OK = [(0.49, 60), (0.48, 60)]       # YES ask 0.51 -> mid 0.505; we quote YES
 
 
 def build(tmp_path, books, trades=(), gaps=(), close_days=10, covered_until=None,
-          loop_gaps=()):
+          loop_gaps=(), close_s=None, program_end_s=30 * 86400):
     """books: [(dt, yes_levels, no_levels)], trades: [(dt, yes_price, count, taker_side)].
     Like the recorder, an unchanged book is not stored again; covered_until is the
     last successful poll (poll_state.last_ok)."""
     path = tmp_path / "rec.db"
     con = db.connect(path)
     db.upsert_markets(con, [{"ticker": "K", "event_ticker": "EK-1", "status": "active",
-                             "close_time": iso(T + close_days * 86400),
+                             "close_time": iso(T + (close_s if close_s is not None
+                                                    else close_days * 86400)),
                              "price_ranges": CENT}], {"EK": {"fee_type": "quadratic"}}, T)
-    start, end = T - 86400, T + 30 * 86400            # 31-day program at $86.40/day
+    start, end = T - 86400, T + program_end_s         # $86.40/day
+    days = (end - start) / 86400
     db.upsert_programs(con, [{"id": "p", "market_ticker": "K", "start_date": iso(start),
-                              "end_date": iso(end), "period_reward": 86.4 * 31 * 10_000,
+                              "end_date": iso(end), "period_reward": 86.4 * days * 10_000,
                               "target_size_fp": "100.00", "discount_factor_bps": 5000}], T)
     for dt, y, n in books:
         db.store_book(con, "K", T + dt, raw_book(y, n))
@@ -126,3 +128,19 @@ def test_one_sweep_fills_an_order_once(tmp_path):
                 covered_until=300)
     r = run(con)
     assert sum(f.size for f in r.fills) == pytest.approx(10)
+
+
+def test_blackout_start_cancels_resting_orders(tmp_path):
+    # blackout begins at t=100 (3 days before close); the book never changes again
+    con = build(tmp_path, books=[(0, YES_OK, NO_OK)], trades=[(1800, 0.40, 50, "no")],
+                close_s=259200 + 100, covered_until=1800)
+    r = run(con)
+    assert r.fills == []
+    assert sum(r.quoted_s_by_day.values()) == pytest.approx(100 - LAG)
+
+
+def test_program_end_stops_quoting_and_rewards(tmp_path):
+    con = build(tmp_path, books=[(0, YES_OK, NO_OK)], program_end_s=500, covered_until=1800)
+    r = run(con)
+    assert sum(r.quoted_s_by_day.values()) == pytest.approx(500 - LAG)
+    assert sum(r.reward_by_day.values()) == pytest.approx(0.001 * 0.1 * (500 - LAG))
