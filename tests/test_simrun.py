@@ -50,6 +50,12 @@ def test_run_end_to_end_report(tmp_path):
     text = run(CFG, recorder_db(tmp_path), out, None, None, client=FakeClient({"A": "yes", "B": ""}))
     assert "Strategy version 1.0.0" in text
     assert "GATE A: NOT YET" in text and "1 of 10 days" in text
+    # every markout horizon and settlement, not just the 600 s primary
+    assert "Markouts" in text and "60 s" in text and "3600 s" in text and "settlement" in text
+    assert "Unknown 600 s markouts: 0 of" in text
+    # Gate A's market count shown against what it rests on (rewards are estimates)
+    assert "Positive markets:" in text and "with at least one fill" in text
+    assert "market-hours per day" in text and "rewards are estimates" in text.lower()
     rows = (out / "sim_market_days.csv").read_text(encoding="utf-8").strip().splitlines()
     assert rows[0].startswith("ticker,day") and len(rows) >= 2
     con = sqlite3.connect(out / "sim.db")

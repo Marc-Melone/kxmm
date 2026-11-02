@@ -131,6 +131,33 @@ def run(cfg: dict, db_path: Path, out_dir: Path, t0: float | None, t1: float | N
         lines.append(f"Per fill ({scfg['primary_markout_s']} s markout return): n={fs.n}, "
                      f"mean {fs.mean:.2%}" + (f", sd {fs.sd:.2%}" if fs.sd is not None else "")
                      + f", {fs.per_market_day:.1f} fills per quoted market-day")
+    fills = [f for r in results for f in r.fills]
+    h0 = scfg["primary_markout_s"]
+    parts = []
+    for h in scfg["markouts_s"]:
+        vals = [f.markouts[h] for f in fills if f.markouts.get(h) is not None]
+        parts.append(f"{h} s {_money(sum(vals))} ({len(vals)} known)")
+    settled = [((settle[f.ticker] - f.price) * f.size if f.side == "yes"
+                else ((1 - f.price) - settle[f.ticker]) * f.size)
+               for f in fills if settle.get(f.ticker) is not None]
+    parts.append(f"settlement {_money(sum(settled))} ({len(settled)} known)")
+    lines.append("Markouts, all fills, before fees: " + " | ".join(parts))
+    unknown = [f for f in fills if f.markouts.get(h0) is None]
+    lines.append(f"Unknown {h0} s markouts: {len(unknown)} of {len(fills)} fills; at the last "
+                 f"known mid they total {_money(sum(f.fallback or 0.0 for f in unknown))}")
+    pos = [tk for tk, v in per_market.items() if v[0] > 0]
+    pos_filled = [tk for tk in pos if per_market[tk][3] > 0]
+    lines.append(f"Positive markets: {len(pos)} of {len(per_market)} "
+                 f"({len(pos_filled)} with at least one fill). Rewards are estimates, "
+                 f"not yet checked against a real Kalshi payout.")
+    hours: dict[str, float] = {}
+    for r in results:
+        for d, secs in r.quoted_s_by_day.items():
+            hours[d] = hours.get(d, 0.0) + secs / 3600
+    if hours:
+        hv = sorted(hours.values())
+        lines.append(f"Quoted market-hours per day: min {hv[0]:.1f}, median "
+                     f"{hv[len(hv) // 2]:.1f}, max {hv[-1]:.1f}")
     known = [r for r in results if settle.get(r.ticker) is not None]
     open_ = [r for r in results if settle.get(r.ticker) is None and r.last_mid is not None]
     lines.append(
