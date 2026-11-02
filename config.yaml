@@ -42,6 +42,24 @@ sim:                         # Phase 2 — pre-registered in STRATEGY.md; change
   gate_a_min_fills: 100        # ... and this many fills with a known primary markout
   live_markets: 5              # markets the live test will quote
   book_lag_s: 2                # books count as seen this long after their local timestamp
+trade:                       # Phase 3 — DEMO ONLY (mock funds); see README "Phase 3"
+  base_url: https://external-api.demo.kalshi.co/trade-api/v2
+  stake_usd: 300               # limits below scale with this
+  quote_size: 1                # contracts per side on demo
+  max_event_loss_frac: 0.10    # worst-case loss across one event's legs
+  daily_loss_frac: 0.03        # -3% in a UTC day: cancel all, pause to next day
+  weekly_loss_frac: 0.08       # -8% in a week: HALT until a person clears it
+  group_limit_mult: 2          # order-group 15 s fill limit = this x quote_size
+  book_poll_s: 5               # order book per market
+  stale_book_s: 20             # older book: cancel that market's orders
+  status_poll_s: 30            # exchange status
+  reconcile_s: 60              # positions + resting orders vs Kalshi
+  markets: []                  # explicit demo tickers; empty = auto-pick
+  max_markets: 3
+  plumbing_bid: 0.03           # far-from-touch quotes when a demo book is empty
+  plumbing_ask: 0.97
+  churn_s: 600                 # move plumbing quotes a tick this often (exercises amend)
+  demo_target: 10              # stand-in reward target for the quoting engine on demo
 output:
   db_path: out/kxmm.db
   log_path: out/kxmm.log
