@@ -1,4 +1,4 @@
-Strategy version: 1.0.0 (pre-registered 2026-11-02, before any recorded day was simulated)
+Strategy version: 1.1.0 (pre-registered 2026-11-02, before any recorded day was simulated)
 
 # kxmm strategy — pre-registered rulebook
 
@@ -72,12 +72,29 @@ live test; live fills, not this simulation, decide the question.
 
 ## Gate A
 
-- **Pass:** simulated net > 0 in at least 3 markets, over at least 10
-  recorded days.
-- The report also gives the per-fill mean and s.d. of the 600 s markout
-  return, `fills_needed = ceil((2 × sd / mean)²)`, and the implied live days
-  at 5 markets. That target is written into "Gate A result" below before any
-  live order.
+A **recorded day** is a UTC day with at least 20 hours of recording (the
+loop up and polling). Gate A is judged over at least 10 such days:
+
+1. **Enough fills:** at least 100 simulated fills with a known 600 s markout,
+   so the trading edge is measured rather than assumed.
+2. **Beyond chance:** the day bootstrap of the primary total (rewards × 0.5)
+   has its 2.5th percentile above zero.
+3. **Trading edge:** total trading-only P&L (600 s markouts minus fees) is
+   above zero.
+
+- All three hold: **PASS**.
+- 1 and 2 hold but 3 doesn't: **PASS — rewards only**, the conditional yes:
+  go live at small size, and stay small until Kalshi renews its rewards past
+  Jan 1, 2027.
+- Otherwise: **NOT YET**, with the reasons.
+
+The count of markets with positive net is reported but decides nothing: with
+about 40 recorded markets and rewards always positive, it says little.
+
+The report also gives the per-fill mean and s.d. of the 600 s markout
+return, `fills_needed = ceil((2 × sd / mean)²)`, and the implied live days at
+5 markets. That target is written into "Gate A result" below before any live
+order.
 
 ## Void policy
 
@@ -90,6 +107,11 @@ segment. Tuning may use only the first 5 recorded days.
 
 ## Changelog
 
+- 1.0.0 → 1.1.0, 2026-11-02, before any recorded day was simulated: Gate A no
+  longer passes on "net > 0 in 3 markets", which rewards alone satisfy with
+  zero fills (the review's smoke run: 42 of 42 positive, 0 with a fill). It
+  now needs 10 days of 20+ hours, 100 fills with a known markout, a total
+  beyond chance, and a positive trading edge, or reports "rewards only".
 - 2026-11-02, before any recorded day was simulated (still 1.0.0): from the
   code review: gaps are merged before replay; trades before books at equal
   times plus a 2 s book lag; a sweep's trades are applied before requoting.

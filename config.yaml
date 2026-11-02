@@ -24,7 +24,7 @@ select:
   quote_size: 10             # contracts per side used to estimate reward share
   maker_fee_rate: 0.0175     # maker fee = rate * P * (1-P) per contract
 sim:                         # Phase 2 — pre-registered in STRATEGY.md; change = version bump
-  strategy_version: "1.0.0"
+  strategy_version: "1.1.0"
   quote_size: 10               # contracts per side
   stake_usd: 300               # limits scale with this
   max_loss_per_market_frac: 0.05   # worst-case loss cap per market (5% of stake)
@@ -37,8 +37,9 @@ sim:                         # Phase 2 — pre-registered in STRATEGY.md; change
   primary_markout_s: 600       # the test's markout
   bootstrap_n: 10000           # day-bootstrap resamples
   bootstrap_seed: 7
-  gate_a_min_markets: 3        # Gate A: net > 0 in at least this many markets
-  gate_a_min_days: 10          # ... over at least this many recorded days
+  gate_a_min_days: 10          # Gate A: at least this many recorded days ...
+  gate_a_min_hours_per_day: 20 # ... each with at least this many hours recorded
+  gate_a_min_fills: 100        # ... and this many fills with a known primary markout
   live_markets: 5              # markets the live test will quote
   book_lag_s: 2                # books count as seen this long after their local timestamp
 output:
