@@ -61,3 +61,9 @@ def reconcile(local_pos: dict[str, float], remote_pos: dict[str, float],
     for oid in sorted(local_ids - remote_ids):
         out.append(f"order {oid} is tracked locally but not resting on Kalshi")
     return out
+
+
+def seed_positions(pnl: Pnl, positions: dict[str, float]) -> None:
+    """Start from what Kalshi already holds, so reconciliation agrees from the first check."""
+    for t, p in positions.items():
+        pnl._pos[t] = float(p)
