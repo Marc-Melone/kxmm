@@ -48,8 +48,9 @@ class FakeClient:
 def test_run_end_to_end_report(tmp_path):
     out = tmp_path / "out"
     text = run(CFG, recorder_db(tmp_path), out, None, None, client=FakeClient({"A": "yes", "B": ""}))
-    assert "Strategy version 1.0.0" in text
-    assert "GATE A: NOT YET" in text and "1 of 10 days" in text
+    assert f"Strategy version {CFG['sim']['strategy_version']}" in text
+    assert "GATE A: NOT YET" in text and "0 of 10 days with at least 20 h recorded" in text
+    assert "Recorded days (20+ h): 0" in text
     # every markout horizon and settlement, not just the 600 s primary
     assert "Markouts" in text and "60 s" in text and "3600 s" in text and "settlement" in text
     assert "Unknown 600 s markouts: 0 of" in text

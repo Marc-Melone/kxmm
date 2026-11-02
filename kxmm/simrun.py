@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .replay import open_readonly, recorded_days, tickers_in
+from .replay import covered_hours_by_day, open_readonly, recorded_days, tickers_in
 from .sim import simulate_market
 from .stats import bootstrap_lower, day_totals, fill_stats, gate_a, market_days, t_stat
 
@@ -88,8 +88,13 @@ def run(cfg: dict, db_path: Path, out_dir: Path, t0: float | None, t1: float | N
             skipped.append(tk)                      # no market metadata recorded
     mds = market_days(results, scfg)
     days = recorded_days(con, t0, t1)
+    covered = sum(1 for h in covered_hours_by_day(con, t0, t1).values()
+                  if h >= scfg["gate_a_min_hours_per_day"])
     fs = fill_stats(results, mds, scfg)
-    gate = gate_a(mds, days, fs, scfg)
+    totals = list(day_totals(mds, "total").values())
+    lower = (bootstrap_lower(totals, scfg["bootstrap_n"], scfg["bootstrap_seed"])
+             if len(totals) >= 2 else None)
+    gate = gate_a(mds, covered, fs, lower, scfg)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     sim = sqlite3.connect(out_dir / "sim.db")
@@ -115,7 +120,8 @@ def run(cfg: dict, db_path: Path, out_dir: Path, t0: float | None, t1: float | N
         acc[2] += m.reward
         acc[3] += m.fills
     lines = [head,
-             f"Data: {_date(t0)} to {_date(t1)} ({days} recorded day(s)), {len(results)} markets, "
+             f"Data: {_date(t0)} to {_date(t1)} ({days} day(s) with books; Recorded days "
+             f"(20+ h): {covered}), {len(results)} markets, "
              f"{sum(len(r.fills) for r in results)} fills"
              + (f"; {len(skipped)} skipped without metadata" if skipped else ""),
              "Per market (net, best first):"]
@@ -163,7 +169,7 @@ def run(cfg: dict, db_path: Path, out_dir: Path, t0: float | None, t1: float | N
     lines.append(
         f"Inventory luck: {len(known)} settled market(s) {_money(sum(r.cash + r.position * settle[r.ticker] for r in known))}; "
         f"{len(open_)} open at last mid {_money(sum(r.cash + r.position * r.last_mid for r in open_))}")
-    lines.append("GATE A: PASS" if gate.passed else "GATE A: NOT YET — " + "; ".join(gate.reasons))
+    lines.append(f"GATE A: {gate.verdict}" + (f" — {'; '.join(gate.reasons)}" if gate.reasons else ""))
     if fs.fills_needed and gate.live_days_needed is not None:
         lines.append(f"LIVE TARGET: {fs.fills_needed} fills ≈ {gate.live_days_needed:.0f} days "
                      f"at {scfg['live_markets']} markets")

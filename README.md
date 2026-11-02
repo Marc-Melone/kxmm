@@ -67,10 +67,13 @@ After a reboot (Windows Update does this on its own; set active hours or pause u
 ```
 
 How to read the report:
-- **Per market:** simulated net for each recorded market. Gate A needs at least 3 positive markets.
+- **Per market:** simulated net for each recorded market (reported only; rewards make most of them positive).
 - **Daily totals:** the agreed test. `beyond chance: YES` means the 97.5% lower bound of the mean daily P&L is above zero. "trading only" shows the result without rewards.
 - **LIVE TARGET:** the fills needed for t ≈ 2 at the simulated edge, and about how many days 5 live markets take to get them.
-- **GATE A:** `PASS`, or `NOT YET` with the reasons.
+- **GATE A** (STRATEGY.md 1.1.0): needs 10 days with 20+ hours recorded, 100 fills with a known 10-minute markout, a total beyond chance, and a positive trading edge.
+  - `PASS`: all four hold.
+  - `PASS — rewards only`: everything but the trading edge, so live trading stays small until Kalshi renews its rewards.
+  - `NOT YET`: printed with the reasons.
 
 Results are also saved to `out\sim.db` and `out\sim_market_days.csv`. To run it on the Mac instead, copy `out\kxmm.db` across, ideally while the recorder is stopped, and run `./kxmm.sh sim --db <copy>`.
 

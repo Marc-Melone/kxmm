@@ -2,8 +2,8 @@ import pytest
 
 from kxmm.config import load_config
 from kxmm.sim import Fill, MarketResult
-from kxmm.stats import (MarketDay, bootstrap_lower, day_totals, fill_stats, gate_a,
-                        market_days, t_stat)
+from kxmm.stats import (FillStats, MarketDay, bootstrap_lower, day_totals, fill_stats,
+                        gate_a, market_days, t_stat)
 
 S = load_config()["sim"]
 DAY = "2027-01-15"
@@ -46,18 +46,28 @@ def test_fill_stats_sample_size():
     assert fs.per_market_day == pytest.approx(2.0)
 
 
-def md(ticker, total, day=DAY):
-    return MarketDay(ticker, day, 1, total, 0.0, 0.0, total)
+def md(ticker, total, day=DAY, trading=None):
+    return MarketDay(ticker, day, 1, total if trading is None else trading, 0.0, 0.0, total)
 
 
-def test_gate_a_needs_days_and_markets():
-    fs = fill_stats([result([fill(0.1484 * 5), fill(-0.0756 * 5)])],
-                    [md("A", 1.0)], S)
-    three = [md("A", 1.0), md("B", 0.5), md("C", 0.2), md("D", -3.0)]
-    short = gate_a(three, 9, fs, S)
-    assert short.passed is False and any("9 of 10 days" in r for r in short.reasons)
-    ok = gate_a(three, 10, fs, S)
-    assert ok.passed is True and ok.markets_positive == 3
-    assert ok.live_days_needed == pytest.approx(76 / (fs.per_market_day * 5))
-    two = gate_a([md("A", 1.0), md("B", 0.5), md("C", -0.2)], 10, fs, S)
-    assert two.passed is False and any("2 of 3 markets" in r for r in two.reasons)
+FS_OK = FillStats(n=120, mean=0.03, sd=0.15, fills_needed=100, per_market_day=2.0)
+
+
+def test_gate_a_needs_days_and_fills():
+    mds = [md("A", 1.0)]
+    short = gate_a(mds, 9, FS_OK, 0.5, S)
+    assert short.passed is False and short.verdict == "NOT YET"
+    assert any("9 of 10 days" in r for r in short.reasons)
+    few = gate_a(mds, 10, FillStats(80, 0.03, 0.15, 100, 2.0), 0.5, S)
+    assert few.passed is False and any("80 of 100 fills" in r for r in few.reasons)
+
+
+def test_gate_a_pass_rewards_only_and_chance():
+    ok = gate_a([md("A", 1.0, trading=0.4)], 10, FS_OK, 0.5, S)
+    assert (ok.passed, ok.verdict) == (True, "PASS")
+    assert ok.live_days_needed == pytest.approx(100 / (2.0 * 5))
+    rewards_only = gate_a([md("A", 1.0, trading=-0.2)], 10, FS_OK, 0.5, S)
+    assert (rewards_only.passed, rewards_only.verdict) == (True, "PASS — rewards only")
+    chance = gate_a([md("A", 1.0, trading=0.4)], 10, FS_OK, -0.1, S)
+    assert chance.passed is False and any("beyond chance" in r for r in chance.reasons)
+    assert gate_a([md("A", 1.0)], 10, FS_OK, None, S).passed is False   # under 2 days

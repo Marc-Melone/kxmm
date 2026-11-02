@@ -42,6 +42,7 @@ class GateA:
     days: int
     reasons: list[str] = field(default_factory=list)
     live_days_needed: float | None = None
+    verdict: str = "NOT YET"           # "PASS", "PASS — rewards only" or "NOT YET"
 
 
 def _day(ts: float) -> str:
@@ -100,18 +101,34 @@ def fill_stats(results: list[MarketResult], mds: list[MarketDay], scfg: dict) ->
     return FillStats(n, mean, sd, needed, per_md)
 
 
-def gate_a(mds: list[MarketDay], recorded_days: int, fs: FillStats, scfg: dict) -> GateA:
+def gate_a(mds: list[MarketDay], covered_days: int, fs: FillStats,
+           day_lower: float | None, scfg: dict) -> GateA:
+    """STRATEGY.md 1.1.0 Gate A: enough recorded days and measured fills, a
+    total beyond chance, and a positive trading edge ("rewards only" if not)."""
     by_market: dict[str, float] = {}
     for m in mds:
         by_market[m.ticker] = by_market.get(m.ticker, 0.0) + m.total
     positive = sum(1 for v in by_market.values() if v > 0)
-    need_m, need_d = scfg["gate_a_min_markets"], scfg["gate_a_min_days"]
+    need_d, need_f = scfg["gate_a_min_days"], scfg["gate_a_min_fills"]
     reasons = []
-    if recorded_days < need_d:
-        reasons.append(f"{recorded_days} of {need_d} days recorded")
-    if positive < need_m:
-        reasons.append(f"{positive} of {need_m} markets with positive net")
+    if covered_days < need_d:
+        reasons.append(f"{covered_days} of {need_d} days with at least "
+                       f"{scfg['gate_a_min_hours_per_day']} h recorded")
+    if fs.n < need_f:
+        reasons.append(f"{fs.n} of {need_f} fills with a known "
+                       f"{scfg['primary_markout_s']} s markout")
+    if day_lower is None or day_lower <= 0:
+        reasons.append("total not beyond chance (day bootstrap lower bound "
+                       + ("n/a" if day_lower is None else f"${day_lower:,.2f}") + ")")
+    trading = sum(m.trading for m in mds)
     live_days = None
     if fs.fills_needed and fs.per_market_day > 0:
         live_days = fs.fills_needed / (fs.per_market_day * scfg["live_markets"])
-    return GateA(not reasons, positive, recorded_days, reasons, live_days)
+    if reasons:
+        verdict = "NOT YET"
+    elif trading > 0:
+        verdict = "PASS"
+    else:
+        verdict = "PASS — rewards only"
+        reasons.append(f"trading-only P&L ${trading:,.2f}: the edge is rewards alone")
+    return GateA(verdict != "NOT YET", positive, covered_days, reasons, live_days, verdict)
