@@ -18,6 +18,8 @@ live test; live fills, not this simulation, decide the question.
 - **Fair value:** microprice of the top of book, in log-odds
   (x = ln(p / (1 − p))).
 - **Volatility:** EWMA of squared log-odds changes per second, half-life 3,600 s.
+  The recorder stores books only when they change, so until the first change
+  the variance is taken as 0.
 - **Reservation:** x_r = x̂ − (position / 10) × γ × σ² × τ, with γ = 0.1 and
   τ = min(86,400 s, time to blackout).
 - **Risk half-width:** δ = ½ × γ × σ² × τ.
