@@ -21,6 +21,7 @@ class FakeTradeClient:
         self.fail_create_msg = "HTTP 409 on POST /portfolio/events/orders: post_only_cross"
         self.ambiguous_create = False           # order lands, but the call raises Unavailable
         self.fail_cancel: set[str] = set()      # order ids whose cancel errors per-order
+        self.settled: set[str] = set()          # tickers whose positions Kalshi has settled
         self.fail_book: set[str] = set()
         self.calls: list[tuple] = []
         self.groups: dict[str, dict] = {}
@@ -41,15 +42,19 @@ class FakeTradeClient:
         return attr
 
     # --- orders ---
-    def create_order(self, ticker, book_side, price, count, client_order_id, order_group_id):
+    def create_order(self, ticker, book_side, price, count, client_order_id, order_group_id,
+                     expiration_time=None):
         self.calls.append(("create", ticker, book_side, round(price, 4), count))
+        from kxmm.kalshi_trade import TradeError
         if ticker in self.fail_create:
-            from kxmm.kalshi_trade import TradeError
             raise TradeError(self.fail_create_msg)
+        if order_group_id and self.groups.get(order_group_id, {}).get("triggered"):
+            raise TradeError("HTTP 409 on POST /portfolio/events/orders: order_group_triggered")
         oid = f"o{next(self._ids)}"
         self.orders[oid] = {"order_id": oid, "ticker": ticker, "book_side": book_side,
                             "price": round(price, 4), "remaining": float(count), "filled": 0.0,
-                            "group": order_group_id, "client_order_id": client_order_id}
+                            "group": order_group_id, "client_order_id": client_order_id,
+                            "expiration": expiration_time}
         if self.ambiguous_create:
             raise Unavailable("POST /portfolio/events/orders: timed out (may have reached Kalshi)")
         return {"order_id": oid}
@@ -61,6 +66,8 @@ class FakeTradeClient:
             raise NotFound(f"/portfolio/events/orders/{order_id}/amend")
         o = self.orders[order_id]
         o["price"], o["remaining"] = round(price, 4), float(count) - o["filled"]
+        if expiration_time is not None:
+            o["expiration"] = expiration_time
         return {"order_id": order_id}
 
     def batch_cancel(self, orders):
@@ -79,6 +86,9 @@ class FakeTradeClient:
         self.orders.clear()
 
     def resting_orders(self, ticker=None):
+        for oid in [o for o, v in self.orders.items()          # Kalshi expires them itself
+                    if v.get("expiration") and v["expiration"] <= self.now()]:
+            self.orders.pop(oid)
         return [{"order_id": o["order_id"], "ticker": o["ticker"], "book_side": o["book_side"],
                  "yes_price_dollars": f"{o['price']:.4f}",
                  "remaining_count_fp": f"{o['remaining']:.2f}",
@@ -115,7 +125,7 @@ class FakeTradeClient:
                 .timestamp() >= min_ts]
 
     def positions(self):
-        pos = dict(self.pos, **self.misreport)
+        pos = {t: p for t, p in dict(self.pos, **self.misreport).items() if t not in self.settled}
         return [{"ticker": t, "position_fp": f"{p:.2f}"} for t, p in pos.items()]
 
     # --- groups / status / data ---
@@ -148,10 +158,11 @@ class FakeTradeClient:
         return rows
 
 
-def market(ticker, event="EK-1", close_days=10, now=1_800_000_000.0):
+def market(ticker, event="EK-1", close_days=20, now=1_800_000_000.0, **extra):
     return {"ticker": ticker, "event_ticker": event, "status": "active", "market_type": "binary",
             "mve_collection_ticker": None, "close_time": iso(now + close_days * 86400),
-            "price_ranges": CENT, "yes_bid_dollars": "0.0000", "yes_ask_dollars": "0.0000"}
+            "price_ranges": CENT, "yes_bid_dollars": "0.0000", "yes_ask_dollars": "0.0000",
+            "can_close_early": False, **extra}
 
 
 def utc(ts):

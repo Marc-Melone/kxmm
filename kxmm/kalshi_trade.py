@@ -130,13 +130,16 @@ class KalshiTrade:
 
     # --- orders ------------------------------------------------------------
     def create_order(self, ticker: str, book_side: str, price: float, count: float,
-                     client_order_id: str, order_group_id: str | None) -> dict:
+                     client_order_id: str, order_group_id: str | None,
+                     expiration_time: int | None = None) -> dict:
         body = {"ticker": ticker, "side": book_side, "price": _px(price), "count": _ct(count),
                 "time_in_force": "good_till_canceled", "post_only": True,
                 "cancel_order_on_pause": True, "self_trade_prevention_type": "taker_at_cross",
                 "client_order_id": client_order_id}
         if order_group_id:
             body["order_group_id"] = order_group_id
+        if expiration_time is not None:
+            body["expiration_time"] = int(expiration_time)
         return self._request("POST", "/portfolio/events/orders", body=body, idempotent=False)
 
     def take(self, ticker: str, book_side: str, price: float, count: float) -> dict:
@@ -147,9 +150,11 @@ class KalshiTrade:
             idempotent=False)
 
     def amend_order(self, order_id: str, ticker: str, book_side: str, price: float,
-                    count: float) -> dict:
-        return self._request("POST", f"/portfolio/events/orders/{order_id}/amend", body={
-            "ticker": ticker, "side": book_side, "price": _px(price), "count": _ct(count)})
+                    count: float, expiration_time: int | None = None) -> dict:
+        body = {"ticker": ticker, "side": book_side, "price": _px(price), "count": _ct(count)}
+        if expiration_time is not None:
+            body["expiration_time"] = int(expiration_time)
+        return self._request("POST", f"/portfolio/events/orders/{order_id}/amend", body=body)
 
     def batch_cancel(self, orders: list[tuple[str, str]]) -> list[str]:
         """orders: [(order_id, market_ticker)]. Returns the ids Kalshi failed to cancel

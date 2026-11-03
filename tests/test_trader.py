@@ -6,6 +6,7 @@ from kxmm import tradedb
 from kxmm.config import load_config
 from kxmm.trader import Trader
 from tests.fakes import FakeTradeClient, market
+from kxmm.kalshi_public import Unavailable
 from tests.helpers import NO, YES, raw_book
 
 T = 1_800_000_000.0          # 2027-01-15 08:00 UTC
@@ -22,13 +23,13 @@ class Clock:
         return self.t
 
 
-def make(tmp_path, book=None, clock=None):
+def make(tmp_path, book=None, clock=None, cfg=None, markets=None, books=None):
     clock = clock or Clock()
-    fake = FakeTradeClient(books={"K": book if book is not None else raw_book(YES, NO)},
-                           markets=[market("K")], now=clock,
+    fake = FakeTradeClient(books=books or {"K": book if book is not None else raw_book(YES, NO)},
+                           markets=markets or [market("K")], now=clock,
                            fault_dir=tmp_path / "out" / "trade")
     con = tradedb.connect(tmp_path / "out" / "trade" / "trade.db")
-    tr = Trader(CFG, fake, con, tmp_path, clock=clock, sleep=lambda s: None,
+    tr = Trader(cfg or CFG, fake, con, tmp_path, clock=clock, sleep=lambda s: None,
                 awake=contextlib.nullcontext)
     return tr, fake, con, clock
 
@@ -63,9 +64,11 @@ def test_plumbing_quotes_on_empty_book_and_churn(tmp_path):
     tr.start()
     tr.cycle(clock())
     assert sides(fake) == [("ask", 0.97), ("bid", 0.03)]
-    clock.t += TC["churn_s"]
-    tr.cycle(clock())
-    assert [c[0] for c in fake.calls].count("amend") == 2      # both sides moved a tick
+    for k in range(1, 7):                             # cycling keeps the expiry fresh
+        clock.t = T + 100 * k
+        tr.cycle(clock())
+    assert sides(fake) == [("ask", 0.96), ("bid", 0.04)]     # churned a tick at T+600
+    assert [c[0] for c in fake.calls].count("create") == 2   # by amend, never re-placed
 
 
 def test_fill_updates_position_and_requotes(tmp_path):
@@ -288,3 +291,125 @@ def test_start_does_not_double_count_recent_fills(tmp_path):
     assert tr.pnl.position("K") == pytest.approx(1)
     assert events(con, "reconcile_bad") == []
     assert tr.pnl.cash == pytest.approx(-0.51)            # its cost still counts
+
+
+def test_orders_expire_on_their_own_and_are_refreshed(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    ttl = TC["order_ttl_s"]
+    assert all(o["expiration"] == clock() + ttl for o in fake.orders.values())
+    clock.t += ttl / 2 + 1
+    tr.cycle(clock())
+    assert [c[0] for c in fake.calls].count("amend") == 2          # both expiries refreshed
+    assert all(o["expiration"] > clock() + ttl / 2 for o in fake.orders.values())
+
+
+def test_kill_during_outage_exits_and_relies_on_expiry(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.tick()
+    tdir = tmp_path / "out" / "trade"
+    (tdir / "FAULT_NET").write_text("")
+    (tdir / "KILL").write_text("")
+    assert tr.tick() is False
+    assert any("expire" in d for d in events(con, "outage"))
+
+
+def test_halt_cancel_is_retried_until_it_lands(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    real, fails = fake.cancel_all, [1]
+
+    def flaky():
+        if fails:
+            fails.pop()
+            raise Unavailable("network down")
+        real()
+    fake.cancel_all = flaky
+    (tmp_path / "out" / "trade" / "HALT").write_text("x")
+    tr.cycle(clock())
+    assert fake.orders                                  # the first cancel failed
+    tr.cycle(clock() + 5)
+    assert fake.orders == {}                            # retried and confirmed
+
+
+def test_run_cancels_everything_even_on_ctrl_c(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+
+    def interrupt(s):
+        raise KeyboardInterrupt
+    tr.sleep = interrupt
+    with pytest.raises(KeyboardInterrupt):
+        tr.run()
+    assert fake.orders == {}
+
+
+def test_tripped_group_is_reset_after_cooldown(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    fake.trigger_order_group(tr.groups["K"])            # a burst of fills: Kalshi pulls all
+    clock.t += 5
+    tr.cycle(clock())
+    assert events(con, "group_trip") and fake.orders == {}
+    clock.t += TC["group_cooldown_s"] + 1
+    tr.cycle(clock())
+    assert events(con, "group_reset") and sides(fake) == [("ask", 0.51), ("bid", 0.50)]
+
+
+def test_repeated_group_trips_halt(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    for _ in range(TC["max_group_resets_per_hour"] + 1):
+        fake.trigger_order_group(tr.groups["K"])
+        clock.t += 5
+        tr.cycle(clock())
+        clock.t += TC["group_cooldown_s"] + 1
+        tr.cycle(clock())
+    halt = tmp_path / "out" / "trade" / "HALT"
+    assert halt.exists() and "order group" in halt.read_text(encoding="utf-8")
+
+
+def test_settled_position_is_booked_not_a_mismatch(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    bid = next(o for o, v in fake.orders.items() if v["book_side"] == "bid")
+    fake.fill(bid, 1)                                   # long 1 YES at 0.50
+    clock.t += 5
+    tr.cycle(clock())
+    cash = tr.pnl.cash
+    fake.settled.add("K")
+    fake.market_rows = [market("K", status="finalized", result="yes")]
+    clock.t += TC["reconcile_s"]
+    tr.cycle(clock())
+    assert events(con, "settle") and events(con, "reconcile_bad") == []
+    assert tr.pnl.position("K") == 0 and tr.pnl.cash == pytest.approx(cash + 1.0)
+
+
+def auto_cfg(**trade):
+    cfg = load_config()
+    cfg["trade"] = dict(cfg["trade"], markets=[], **trade)
+    return cfg
+
+
+def test_closed_or_blacked_out_market_is_replaced(tmp_path):
+    books = {"K": raw_book(YES, NO), "J": raw_book(YES, NO)}
+    tr, fake, con, clock = make(tmp_path, cfg=auto_cfg(max_markets=1), books=books,
+                                markets=[market("K", close_days=15), market("J", close_days=40)])
+    tr.start()
+    assert list(tr.meta) == ["K"]
+    clock.t = T + (15 - 3) * 86400 + 1                  # K enters its 3-day blackout
+    tr.cycle(clock())
+    assert list(tr.meta) == ["J"] and sides(fake, "J") == [("ask", 0.51), ("bid", 0.50)]
+
+
+def test_auto_pick_skips_early_closers_and_short_dated(tmp_path):
+    rows = [market("A", close_days=30, can_close_early=True), market("B", close_days=5),
+            market("C", close_days=30)]
+    tr, fake, con, clock = make(tmp_path, cfg=auto_cfg(), markets=rows)
+    tr.start()
+    assert list(tr.meta) == ["C"]

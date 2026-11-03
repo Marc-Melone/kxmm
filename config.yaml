@@ -60,6 +60,11 @@ trade:                       # Phase 3 — DEMO ONLY (mock funds); see README "P
   plumbing_ask: 0.97
   churn_s: 600                 # move plumbing quotes a tick this often (exercises amend)
   demo_target: 10              # stand-in reward target for the quoting engine on demo
+  order_ttl_s: 300             # every order expires on its own unless refreshed (crash backstop)
+  group_cooldown_s: 60         # wait after an order group trips before resetting it
+  max_group_resets_per_hour: 3 # more resets than this in an hour: HALT
+  min_days_to_close: 10        # auto-pick: 3-day blackout + 5-day gate + margin
+  plumbing: true               # far-from-touch quotes on empty demo books (never on production)
 output:
   db_path: out/kxmm.db
   log_path: out/kxmm.log

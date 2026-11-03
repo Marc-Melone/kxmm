@@ -28,7 +28,7 @@ from .rewards import tick_size
 from .risk import Pnl, event_room, loss_state, reconcile, seed_positions
 
 log = logging.getLogger("kxmm.trader")
-MIN_DAYS_TO_CLOSE = 3
+SETTLED = {"finalized", "settled", "determined"}
 
 
 def _utc(ts: float) -> datetime:
@@ -67,6 +67,12 @@ class Trader:
         self.day_start = self.week_start = 0.0
         self.last_mark: dict[str, float] = {}
         self.halt_kind: str | None = None
+        self.halt_confirmed = False
+        self.expiry: dict[str, int] = {}           # order id -> its expiration_time
+        self.group_trip: dict[str, float] = {}     # ticker -> when its group tripped
+        self.reject_streak: dict[str, int] = {}
+        self.resets: list[float] = []
+        self.next_repick = 0.0
         if hasattr(client, "on_attempt"):
             client.on_attempt = lambda: tradedb.heartbeat(self.con, self.clock())
 
@@ -76,28 +82,63 @@ class Trader:
         (log.warning if kind in ("error", "halt", "reconcile_bad", "stale") else log.info)(
             "%s %s", kind, detail)
 
-    def _cancel_all(self, why: str) -> None:
+    def _cancel_all(self, why: str) -> bool:
+        """True once Kalshi confirmed it. Offline, resting orders still expire on their own."""
         try:
             self.client.cancel_all()
-        except Unavailable as e:                  # offline: Kalshi's own pause/group rails hold
-            self._event("outage", f"cancel_all ({why}): {e}")
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._event("outage" if isinstance(e, Unavailable) else "error",
+                        f"cancel_all ({why}) failed: {e}; resting orders expire within "
+                        f"{self.tc['order_ttl_s']} s")
+            return False
 
     def _write_halt(self, reason: str) -> None:
         self.halt.write_text(reason + "\n", encoding="utf-8")
-        self._cancel_all("halt")
         self.halted = True
         self._event("halt", reason)
+        self.halt_confirmed = self._cancel_all("halt")
 
-    def _pick_markets(self, now: float) -> list[dict]:
+    def _pick_markets(self, now: float, exclude: set[str] = frozenset()) -> list[dict]:
         if self.tc["markets"]:
-            return self.client.markets(tickers=",".join(self.tc["markets"]))
+            return [m for m in self.client.markets(tickers=",".join(self.tc["markets"]))
+                    if m["ticker"] not in exclude]
+        horizon = now + self.tc["min_days_to_close"] * 86400
         rows = [m for m in self.client.markets(status="open", mve_filter="exclude")
                 if m.get("market_type") == "binary" and not m.get("mve_collection_ticker")
-                and (iso_ts(m.get("close_time")) or 0) - now >= MIN_DAYS_TO_CLOSE * 86400]
+                and not m.get("can_close_early")          # e.g. live games that end early
+                and m["ticker"] not in exclude
+                and (iso_ts(m.get("close_time")) or 0) >= horizon
+                and (iso_ts(m.get("occurrence_datetime")) or math.inf) >= horizon]
         two = [m for m in rows if float(m.get("yes_bid_dollars") or 0) > 0
                and 0 < float(m.get("yes_ask_dollars") or 0) < 1]
         rest = [m for m in rows if m not in two]
-        return (two + rest)[: self.tc["max_markets"]]
+        return two + rest
+
+    def _add_market(self, m: dict) -> None:
+        t = m["ticker"]
+        self.meta[t] = Meta(t, m.get("price_ranges") or [], iso_ts(m.get("close_time")) or 0,
+                            iso_ts(m.get("occurrence_datetime")), False)
+        self.event_of[t] = m.get("event_ticker", t)
+        self.vol[t] = EwmaVol(self.scfg["vol_halflife_s"])
+        self.groups[t] = self.client.create_order_group(
+            int(self.tc["group_limit_mult"] * self.tc["quote_size"]))
+
+    def _repick(self, now: float) -> None:
+        """Drop markets that entered their blackout or stopped trading; fill the slots."""
+        gone = [t for t, m in self.meta.items() if now >= blackout_at(m, self.scfg)]
+        if gone:
+            resting = self.client.resting_orders()
+            for t in gone:
+                self._cancel_market(resting, t)
+                for d in (self.meta, self.vol, self.books, self.book_ts):
+                    d.pop(t, None)
+                self._event("repick", f"{t}: dropped (blackout or closed)")
+        room = self.tc["max_markets"] - len(self.meta)
+        if room > 0:
+            for m in self._pick_markets(now, exclude=set(self.meta) | set(gone))[:room]:
+                self._add_market(m)
+                self._event("repick", f"{m['ticker']}: added")
 
     def _plumbing(self, book: Book, now: float, ranges: list[dict]) -> Quotes:
         k = int(now // self.tc["churn_s"]) % 2
@@ -189,14 +230,8 @@ class Trader:
         self._load()                               # loss stops and cash survive restarts
         self.client.cancel_all()                   # never inherit orders we didn't place
         self._event("start", "")
-        for m in self._pick_markets(now):
-            t = m["ticker"]
-            self.meta[t] = Meta(t, m.get("price_ranges") or [], iso_ts(m.get("close_time")) or 0,
-                                iso_ts(m.get("occurrence_datetime")), False)
-            self.event_of[t] = m.get("event_ticker", t)
-            self.vol[t] = EwmaVol(self.scfg["vol_halflife_s"])
-            self.groups[t] = self.client.create_order_group(
-                int(self.tc["group_limit_mult"] * self.tc["quote_size"]))
+        for m in self._pick_markets(now)[: self.tc["max_markets"]]:
+            self._add_market(m)
         seed_positions(self.pnl, {p["ticker"]: float(p["position_fp"])
                                   for p in self.client.positions()})
         snap = self.clock()
@@ -213,15 +248,17 @@ class Trader:
             latest = max(latest, ts)
         self.fill_since = latest
         self.next_reconcile = now + self.tc["reconcile_s"]
+        self.next_repick = now + self.tc["reconcile_s"]
         self._save()
         log.info("trading demo markets: %s", ", ".join(self.meta) or "(none)")
 
     def cycle(self, now: float) -> None:
         if self.halt.exists():
             if not self.halted:
-                self.client.cancel_all()
-                self.halted = True
+                self.halted, self.halt_confirmed = True, False
                 self._event("halt", self.halt.read_text(encoding="utf-8").strip())
+            if not self.halt_confirmed:            # keep trying until Kalshi confirms
+                self.halt_confirmed = self._cancel_all("halt")
             tradedb.heartbeat(self.con, now)
             return
         if self.halted and self.halt_kind == "weekly":
@@ -229,6 +266,13 @@ class Trader:
             self.week_start = self.pnl.equity(self.marks())
             self.halt_kind = None
         self.halted = False
+        if now >= self.next_repick:
+            self._repick(now)
+            self.next_repick = now + self.tc["reconcile_s"]
+        self._reset_groups(now)
+        if self.halted:                            # too many group trips just halted us
+            tradedb.heartbeat(self.con, now)
+            return
         if now >= self.next_status:
             self.trading_ok = bool(self.client.exchange_status().get("trading_active"))
             self.next_status = now + self.tc["status_poll_s"]
@@ -263,7 +307,7 @@ class Trader:
                         self.stale.add(t)
                         self._event("stale", f"{t}: no book for {self.tc['stale_book_s']} s")
                 continue
-            if not quoting:
+            if not quoting or t in self.group_trip:
                 continue
             self._quote(t, meta, now, resting, marks)
         if now >= self.next_reconcile:
@@ -273,6 +317,24 @@ class Trader:
         tradedb.heartbeat(self.con, now)
         if not self.halted:
             tradedb.mark_up(self.con, now)     # only a completed trading cycle is uptime
+
+    def _reset_groups(self, now: float) -> None:
+        for t, tripped in list(self.group_trip.items()):
+            if now - tripped < self.tc["group_cooldown_s"] or t not in self.groups:
+                continue
+            try:
+                self.client.reset_order_group(self.groups[t])
+            except Exception as e:  # noqa: BLE001
+                self._event("outage", f"{t} group reset: {e}")
+                continue
+            del self.group_trip[t]
+            self.reject_streak[t] = 0
+            self.resets = [r for r in self.resets if now - r < 3600] + [now]
+            self._event("group_reset", f"{t}: order group reset after a trip")
+            if len(self.resets) > self.tc["max_group_resets_per_hour"]:
+                self._write_halt(f"order group keeps tripping: {len(self.resets)} resets in "
+                                 "the last hour")
+                return
 
     def _quote(self, t: str, meta: Meta, now: float, resting: list[dict],
                marks: dict[str, float]) -> None:
@@ -288,21 +350,42 @@ class Trader:
                 q = Quotes(None, 0.0, q.no_bid, q.no_size)
             else:
                 q = Quotes(q.yes_bid, q.yes_size, None, 0.0)
-        for a in plan_actions(q, self._live(resting, t), meta.price_ranges):
+        live = self._live(resting, t)
+        ttl = self.tc["order_ttl_s"]
+        acts = plan_actions(q, live, meta.price_ranges)
+        acted = {a.order_id for a in acts if a.order_id}
+        for lo in live.values():                   # keep the crash backstop fresh
+            if lo.order_id not in acted and self.expiry.get(lo.order_id, 0) - now < ttl / 2:
+                try:
+                    bs, px = to_book(lo.side, lo.price)
+                    self.client.amend_order(lo.order_id, t, bs, px, lo.filled + lo.remaining,
+                                            expiration_time=int(now + ttl))
+                    self.expiry[lo.order_id] = int(now + ttl)
+                except Unavailable as e:
+                    self._event("outage", f"{t} refresh expiry: {e}")
+                except Exception as e:  # noqa: BLE001
+                    self._event("reject" if self._rejected(e) else "error",
+                                f"{t} refresh expiry: {e}")
+        for a in acts:
             try:
                 if a.kind == "place":
                     bs, px = to_book(a.side, a.price)
                     cid = str(uuid.uuid4())
                     self.client_ids.add(cid)       # before the call: it may land and time out
-                    r = self.client.create_order(t, bs, px, a.size, cid, self.groups.get(t))
+                    r = self.client.create_order(t, bs, px, a.size, cid, self.groups.get(t),
+                                                 expiration_time=int(now + ttl))
                     self.known_ids.add(r.get("order_id"))
+                    self.expiry[r.get("order_id")] = int(now + ttl)
+                    self.reject_streak[t] = 0
                 elif a.kind == "amend":
                     bs, px = to_book(a.side, a.price)
-                    r = self.client.amend_order(a.order_id, t, bs, px, a.amend_count) or {}
-                    new_id = r.get("order_id")
-                    if new_id and new_id != a.order_id:
+                    r = self.client.amend_order(a.order_id, t, bs, px, a.amend_count,
+                                                expiration_time=int(now + ttl)) or {}
+                    new_id = r.get("order_id") or a.order_id
+                    if new_id != a.order_id:
                         self.known_ids.discard(a.order_id)
                         self.known_ids.add(new_id)
+                    self.expiry[new_id] = int(now + ttl)
                 else:
                     if self.client.batch_cancel([(a.order_id, t)]):
                         self._event("reject", f"{t} cancel {a.side}: Kalshi kept the order")
@@ -311,6 +394,15 @@ class Trader:
             except Unavailable as e:              # network / rate limit: handled, not a bug
                 self._event("outage", f"{t} {a.kind} {a.side}: {e}")
             except Exception as e:  # noqa: BLE001
+                if a.kind == "place" and isinstance(e, TradeError) and t in self.groups:
+                    # a tripped group rejects every new order; its message isn't documented,
+                    # so a named group error or 3 rejections in a row count as a trip
+                    self.reject_streak[t] = self.reject_streak.get(t, 0) + 1
+                    if t not in self.group_trip and ("group" in str(e).lower()
+                                                     or self.reject_streak[t] >= 3):
+                        self.group_trip[t] = now
+                        self._event("group_trip", f"{t}: {e}")
+                        continue
                 if self._rejected(e):             # a race, re-planned next cycle
                     self._event("reject", f"{t} {a.kind} {a.side}: {e}")
                     continue
@@ -350,11 +442,19 @@ class Trader:
         self._adopt(remote)
         remote_ids = {o["order_id"] for o in remote}
         self.known_ids &= remote_ids               # filled or cancelled orders are simply gone
+        remote_pos = {p["ticker"]: float(p["position_fp"]) for p in self.client.positions()}
+        for t, p in list(self.pnl.positions().items()):  # settled positions leave Kalshi's list
+            if abs(p) > 1e-9 and t not in remote_pos:
+                rows = self.client.markets(tickers=t)
+                m = rows[0] if rows else {}
+                value = {"yes": 1.0, "no": 0.0}.get(m.get("result") or "")
+                if m.get("status") in SETTLED and value is not None:
+                    self.pnl.settle(t, value)
+                    self._event("settle", f"{t}: {p:+g} settled {m.get('result')} at {value}")
         local = self.pnl.positions()
         first = next(iter(self.meta), None)
         if first and self.client.is_demo and (self.dir / "FAULT_PHANTOM").exists():
             local = {**local, first: local.get(first, 0.0) + 1}   # reconcile drill only
-        remote_pos = {p["ticker"]: float(p["position_fp"]) for p in self.client.positions()}
         bad = reconcile(local, remote_pos, self.known_ids, remote_ids)
         if bad:
             drill = (self.dir / "FAULT_PHANTOM").exists()
@@ -382,8 +482,12 @@ class Trader:
 
     def run(self) -> None:
         with self.awake():
-            self.start()
-            while self.tick():
-                wake = self.clock() + self.tc["book_poll_s"]
-                while self.clock() < wake and not self.kill.exists():
-                    self.sleep(min(1.0, wake - self.clock()))
+            try:
+                self.start()
+                while self.tick():
+                    wake = self.clock() + self.tc["book_poll_s"]
+                    while self.clock() < wake and not self.kill.exists():
+                        self.sleep(min(1.0, wake - self.clock()))
+            finally:
+                if not self.stopped:               # Ctrl+C, a crash: never leave orders
+                    self._cancel_all("exit")

@@ -134,3 +134,11 @@ def test_order_post_is_not_retried_after_ambiguous_failure():
     assert len(s.calls) == 1                       # never re-sent: it may have landed
     c, s, _ = client([(429, {}), (201, {"order_id": "o1"})])
     assert c.create_order("K", "bid", 0.03, 1, "cid", None)["order_id"] == "o1"   # 429 is safe
+
+
+def test_orders_carry_an_expiry_and_amend_can_refresh_it():
+    c, s, _ = client([(201, {"order_id": "o1"}), (200, {"order_id": "o1"})])
+    c.create_order("K", "bid", 0.03, 1, "cid", None, expiration_time=1800000300)
+    c.amend_order("o1", "K", "bid", 0.03, 1, expiration_time=1800000600)
+    assert s.calls[0]["json"]["expiration_time"] == 1800000300
+    assert s.calls[1]["json"]["expiration_time"] == 1800000600

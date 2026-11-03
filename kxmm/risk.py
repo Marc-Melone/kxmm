@@ -22,6 +22,12 @@ class Pnl:
         sign = 1.0 if book_side == "bid" else -1.0
         self.cash += -sign * yes_price * count - fee
 
+    def settle(self, ticker: str, value: float) -> float:
+        """Book a settled market: the position pays value (1.0 YES, 0.0 NO) per contract."""
+        p = self._pos.pop(ticker, 0.0)
+        self.cash += p * value
+        return p
+
     def position(self, ticker: str) -> float:
         return self._pos.get(ticker, 0.0)
 
