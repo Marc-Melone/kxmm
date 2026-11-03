@@ -17,6 +17,11 @@ class Pnl:
         self._pos[ticker] = self._pos.get(ticker, 0.0) + sign * count
         self.cash += -sign * yes_price * count - fee
 
+    def apply_cash(self, book_side: str, yes_price: float, count: float, fee: float) -> None:
+        """A fill whose position change is already in a seeded snapshot: cash only."""
+        sign = 1.0 if book_side == "bid" else -1.0
+        self.cash += -sign * yes_price * count - fee
+
     def position(self, ticker: str) -> float:
         return self._pos.get(ticker, 0.0)
 

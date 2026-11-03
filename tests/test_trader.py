@@ -162,3 +162,69 @@ def test_only_completed_trading_cycles_count_as_uptime(tmp_path):
     clock.t += 120
     tr.tick()
     assert uptime(con) == 1
+
+
+def test_restart_keeps_daily_pause(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    tr.pnl.cash -= 9.0
+    clock.t += 5
+    tr.cycle(clock())
+    assert events(con, "pause")
+    again = Trader(CFG, fake, con, tmp_path, clock=clock, sleep=lambda s: None,
+                   awake=contextlib.nullcontext)
+    again.start()
+    clock.t += 5
+    again.cycle(clock())
+    assert fake.orders == {}                              # still paused after the restart
+    assert again.pnl.cash == pytest.approx(-9.0)
+
+
+def test_missing_mark_uses_last_known_then_worst_case(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())                                     # K's mid 0.505 becomes known
+    fake.books["K"] = raw_book(YES, [])                   # NO side vanishes: no mid
+    tr.pnl.apply_fill("K", "ask", 0.50, 25, 0.0)          # short 25 YES
+    tr.pnl.apply_fill("Z", "bid", 0.40, 2, 0.0)           # long 2 of a never-priced market
+    tr.pnl.apply_fill("Y", "ask", 0.40, 2, 0.0)           # short 2 of a never-priced market
+    clock.t += 5
+    tr.cycle(clock())
+    marks = tr.marks()
+    assert marks["K"] == pytest.approx(0.505)             # last known, not 0
+    assert marks["Z"] == 0.0 and marks["Y"] == 1.0        # worst case for each direction
+
+
+def test_clearing_a_weekly_halt_rebases_the_week(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    tr.pnl.cash -= 24.0                                   # 8% of $300 this week
+    clock.t += 5
+    tr.cycle(clock())
+    halt = tmp_path / "out" / "trade" / "HALT"
+    assert halt.exists()
+    halt.unlink()                                         # a person reviewed it
+    clock.t = (T // 86400 + 1) * 86400 + 1                # next day, same week
+    tr.cycle(clock())
+    tr.cycle(clock() + 5)
+    assert not halt.exists() and sides(fake) == [("ask", 0.51), ("bid", 0.50)]
+
+
+def test_start_does_not_double_count_recent_fills(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    clock.t -= 30
+    fake.fill_rows.append({"fill_id": "early", "ticker": "K", "book_side": "bid",
+                           "yes_price_dollars": "0.5100", "count_fp": "1.00", "fee_cost": "0",
+                           "order_id": "taker", "created_time": __import__("tests.helpers",
+                           fromlist=["iso"]).iso(clock())})
+    fake.pos["K"] = 1.0                                   # e.g. the fill drill just ran
+    clock.t += 30
+    tr.start()
+    tr.cycle(clock())
+    clock.t += TC["reconcile_s"]
+    tr.cycle(clock())
+    assert tr.pnl.position("K") == pytest.approx(1)
+    assert events(con, "reconcile_bad") == []
+    assert tr.pnl.cash == pytest.approx(-0.51)            # its cost still counts

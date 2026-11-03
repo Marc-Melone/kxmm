@@ -6,6 +6,7 @@ Files in out/trade/: KILL stops the loop (cancel all, exit); HALT stops quoting
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
@@ -62,6 +63,8 @@ class Trader:
         self.paused_until = 0.0
         self.day_key = self.week_key = None
         self.day_start = self.week_start = 0.0
+        self.last_mark: dict[str, float] = {}
+        self.halt_kind: str | None = None
         if hasattr(client, "on_attempt"):
             client.on_attempt = lambda: tradedb.heartbeat(self.con, self.clock())
 
@@ -124,9 +127,52 @@ class Trader:
         if ids:
             self.client.batch_cancel(ids)
 
+    # --- state that must survive a restart (loss stops, cash, marks) -------
+    _STATE = ("cash", "day_key", "day_start", "week_key", "week_start", "paused_until",
+              "fill_since", "halt_kind", "last_mark")
+
+    def _save(self) -> None:
+        state = {"cash": self.pnl.cash, "day_key": str(self.day_key) if self.day_key else None,
+                 "day_start": self.day_start,
+                 "week_key": list(self.week_key) if self.week_key else None,
+                 "week_start": self.week_start, "paused_until": self.paused_until,
+                 "fill_since": self.fill_since, "halt_kind": self.halt_kind,
+                 "last_mark": self.last_mark}
+        tradedb.kv_set(self.con, "state", json.dumps(state))
+
+    def _load(self) -> None:
+        raw = tradedb.kv_get(self.con, "state")
+        if not raw:
+            return
+        st = json.loads(raw)
+        self.pnl.cash = st.get("cash", 0.0)
+        if st.get("day_key"):
+            self.day_key = datetime.fromisoformat(st["day_key"]).date()
+        self.day_start = st.get("day_start", 0.0)
+        self.week_key = tuple(st["week_key"]) if st.get("week_key") else None
+        self.week_start = st.get("week_start", 0.0)
+        self.paused_until = st.get("paused_until", 0.0)
+        self.fill_since = st.get("fill_since", 0.0)
+        self.halt_kind = st.get("halt_kind")
+        self.last_mark = st.get("last_mark", {})
+
+    def marks(self) -> dict[str, float]:
+        """A price for every position: the current mid, else the last known mid, else the
+        worst case for that direction (long -> 0, short -> 1). Never a silent 0."""
+        for t, b in self.books.items():
+            m = b.mid()
+            if m is not None:
+                self.last_mark[t] = m
+        out = dict(self.last_mark)
+        for t, p in self.pnl.positions().items():
+            if t not in out:
+                out[t] = 0.0 if p > 0 else 1.0
+        return out
+
     # --- lifecycle -------------------------------------------------------
     def start(self) -> None:
         now = self.clock()
+        self._load()                               # loss stops and cash survive restarts
         self.client.cancel_all()                   # never inherit orders we didn't place
         self._event("start", "")
         for m in self._pick_markets(now):
@@ -139,8 +185,21 @@ class Trader:
                 int(self.tc["group_limit_mult"] * self.tc["quote_size"]))
         seed_positions(self.pnl, {p["ticker"]: float(p["position_fp"])
                                   for p in self.client.positions()})
-        self.fill_since = now
+        snap = self.clock()
+        since = self.fill_since or now - 60
+        latest = now
+        for f in tradedb.add_fills(self.con, self.client.fills(min_ts=int(since) - 60)):
+            ts = iso_ts(f.get("created_time")) or 0.0
+            args = (f["book_side"], float(f["yes_price_dollars"]), float(f["count_fp"]),
+                    float(f.get("fee_cost") or 0))
+            if ts <= snap:                         # already inside the seeded positions
+                self.pnl.apply_cash(*args)
+            else:
+                self.pnl.apply_fill(f["ticker"], *args)
+            latest = max(latest, ts)
+        self.fill_since = latest
         self.next_reconcile = now + self.tc["reconcile_s"]
+        self._save()
         log.info("trading demo markets: %s", ", ".join(self.meta) or "(none)")
 
     def cycle(self, now: float) -> None:
@@ -151,6 +210,10 @@ class Trader:
                 self._event("halt", self.halt.read_text(encoding="utf-8").strip())
             tradedb.heartbeat(self.con, now)
             return
+        if self.halted and self.halt_kind == "weekly":
+            # a person reviewed the weekly loss and cleared HALT: judge from here on
+            self.week_start = self.pnl.equity(self.marks())
+            self.halt_kind = None
         self.halted = False
         if now >= self.next_status:
             self.trading_ok = bool(self.client.exchange_status().get("trading_active"))
@@ -169,7 +232,7 @@ class Trader:
                 log.warning("book %s: %s", t, e)
         resting = self.client.resting_orders()
         self._ingest_fills()
-        marks = {t: b.mid() for t, b in self.books.items() if b.mid() is not None}
+        marks = self.marks()
         if self._loss_check(now, marks):
             resting = []
         quoting = self.trading_ok and now >= self.paused_until and not self.halted
@@ -189,6 +252,7 @@ class Trader:
         if now >= self.next_reconcile:
             self._reconcile()
             self.next_reconcile = now + self.tc["reconcile_s"]
+        self._save()
         tradedb.heartbeat(self.con, now)
         if not self.halted:
             tradedb.mark_up(self.con, now)     # only a completed trading cycle is uptime
@@ -243,6 +307,7 @@ class Trader:
             self.week_key, self.week_start = d.isocalendar()[:2], eq
         state = loss_state(eq, self.day_start, self.week_start, self.tc)
         if state == "halt":
+            self.halt_kind = "weekly"
             self._write_halt(f"weekly loss stop: equity {eq - self.week_start:+.2f} this week")
             return True
         if state == "pause_day" and now >= self.paused_until:
