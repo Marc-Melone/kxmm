@@ -24,3 +24,11 @@ def test_events_and_drills_round_trip(tmp_path):
         "halt", "reconcile: K local 1 vs Kalshi 0")
     assert con.execute("SELECT name, passed FROM drills").fetchone()[:] == ("kill", 1)
     assert tradedb.kv_get(con, "heartbeat") == "3.0"
+
+
+def test_heartbeat_alone_is_not_uptime(tmp_path):
+    con = tradedb.connect(tmp_path / "trade.db")
+    tradedb.heartbeat(con, 60.0)                 # a request attempt, even a failed one
+    assert con.execute("SELECT COUNT(*) FROM uptime").fetchone()[0] == 0
+    tradedb.mark_up(con, 61.0)                   # a completed trading cycle
+    assert con.execute("SELECT COUNT(*) FROM uptime").fetchone()[0] == 1

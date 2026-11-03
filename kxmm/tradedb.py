@@ -63,6 +63,11 @@ def kv_set(con, k: str, v: str) -> None:
 
 
 def heartbeat(con, ts: float) -> None:
-    """Liveness for `status`, plus one row per minute the trader was up (Gate B)."""
-    con.execute("INSERT OR IGNORE INTO uptime VALUES(?)", (int(ts // 60),))
+    """Liveness for `status`. Written on every request attempt, failed ones too."""
     kv_set(con, "heartbeat", repr(ts))
+
+
+def mark_up(con, ts: float) -> None:
+    """One row per minute in which a full trading cycle reached Kalshi (Gate B uptime)."""
+    con.execute("INSERT OR IGNORE INTO uptime VALUES(?)", (int(ts // 60),))
+    con.commit()

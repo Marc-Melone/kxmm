@@ -141,6 +141,10 @@ def cmd_trade_panic(root: Path, cfg: dict, client=None) -> None:
     print("all demo orders cancelled; HALT and KILL written")
 
 
+def _fault_files(tdir: Path) -> list[str]:
+    return sorted(p.name for p in tdir.glob("FAULT_*")) if tdir.exists() else []
+
+
 def cmd_trade_status(root: Path, cfg: dict) -> None:
     from . import tradedb
     from .gateb import gate_b
@@ -152,6 +156,8 @@ def cmd_trade_status(root: Path, cfg: dict) -> None:
     print(f"trader: {state}" + (f" (heartbeat {age:.0f}s ago)" if age is not None else ""))
     if (tdir / "HALT").exists():
         print("HALT: " + (tdir / "HALT").read_text(encoding="utf-8").strip())
+    for f in _fault_files(tdir):
+        print(f"WARNING: out/trade/{f} is present (a drill fault); delete it unless a drill runs")
     counts = dict(con.execute("SELECT kind, COUNT(*) FROM events WHERE ts >= ? GROUP BY kind",
                               (now - 86400,)).fetchall())
     fills = con.execute("SELECT COUNT(*) FROM fills WHERE ts >= ?", (now - 86400,)).fetchone()[0]
@@ -178,6 +184,11 @@ def cmd_trade(root: Path, cfg: dict, argv: list[str]) -> int:
     tdir = root / "out" / "trade"
     sub = argv[0] if argv else ""
     if sub == "start":
+        faults = _fault_files(tdir)
+        if faults:
+            print("refusing to start: " + ", ".join(faults) + " in out/trade/ was left by an "
+                  "interrupted drill and would cut the trader off. Delete it, then start again.")
+            return 1
         key_id, key_path = demo_credentials(root)
         if not key_id or not key_path:
             print(f"missing {KEY_ID if not key_id else KEY_PATH}: create a Kalshi DEMO API key "

@@ -96,3 +96,22 @@ def test_network_drill_passes(tmp_path):
     assert ok, detail
     assert "outage" in kinds(con) and "error" not in kinds(con)
     assert not (tmp_path / "out" / "trade" / "FAULT_NET").exists()
+
+
+def test_kill_drill_fails_when_nothing_was_resting(tmp_path):
+    tr, fake, con, clock, sleep = looped(tmp_path)
+    (tmp_path / "out" / "trade" / "HALT").write_text("x")
+    sleep(1)                                          # the loop cancels everything
+    ok, detail = run_drill("kill", fake, con, tmp_path, CFG, clock, sleep)
+    assert not ok and "nothing was resting" in detail
+
+
+def test_fault_file_removed_when_drill_crashes(tmp_path, monkeypatch):
+    import kxmm.drills as drills
+    tr, fake, con, clock, sleep = looped(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("interrupted")
+    monkeypatch.setattr(drills, "_wait", boom)
+    ok, _ = run_drill("network", fake, con, tmp_path, CFG, clock, sleep)
+    assert not ok and not (tmp_path / "out" / "trade" / "FAULT_NET").exists()

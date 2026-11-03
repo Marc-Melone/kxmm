@@ -99,6 +99,8 @@ def _fill(client, con, d, cfg, clock, sleep):
 
 
 def _kill(client, con, d, cfg, clock, sleep):
+    if not client.resting_orders():
+        return False, "nothing was resting, so a stop proves nothing: let the trader quote first"
     (d / "KILL").write_text("drill\n", encoding="utf-8")
     ok = _wait(lambda: not (d / "KILL").exists() and not client.resting_orders(),
                clock, sleep, 120)
@@ -111,9 +113,13 @@ def _fresh(con, clock) -> bool:
 
 
 def _halt(client, con, d, cfg, clock, sleep):
+    if not client.resting_orders():
+        return False, "nothing was resting, so a halt proves nothing: let the trader quote first"
     (d / "HALT").write_text("drill\n", encoding="utf-8")
-    ok = _wait(lambda: not client.resting_orders() and _fresh(con, clock), clock, sleep, 120)
-    (d / "HALT").unlink(missing_ok=True)
+    try:
+        ok = _wait(lambda: not client.resting_orders() and _fresh(con, clock), clock, sleep, 120)
+    finally:
+        (d / "HALT").unlink(missing_ok=True)
     back = ok and _wait(lambda: bool(client.resting_orders()), clock, sleep, 120)
     return back, ("orders cancelled with the loop alive; quoting resumed" if back
                   else "halt not honoured" if not ok else "quotes did not return after HALT")
@@ -123,9 +129,15 @@ def _fault(fault, client, con, d, cfg, clock, sleep):
     f = d / fault
     t0 = clock()
     f.write_text("drill\n", encoding="utf-8")
-    _wait(lambda: False, clock, sleep, FAULT_S)
-    f.unlink(missing_ok=True)
+    try:
+        _wait(lambda: False, clock, sleep, FAULT_S)
+    finally:
+        f.unlink(missing_ok=True)              # never leave the trader cut off
     t_off = clock()
+    outages = con.execute("SELECT COUNT(*) FROM events WHERE kind='outage' AND ts BETWEEN ? AND ?",
+                          (t0, t_off)).fetchone()[0]
+    if not outages:
+        return False, "no outage was recorded: was the trader running during the drill?"
     recovered = _wait(lambda: con.execute(
         "SELECT 1 FROM events WHERE kind='reconcile_ok' AND ts > ?", (t_off,)).fetchone(),
         clock, sleep, cfg["trade"]["reconcile_s"] + 120)
@@ -138,11 +150,13 @@ def _fault(fault, client, con, d, cfg, clock, sleep):
 
 def _reconcile(client, con, d, cfg, clock, sleep):
     (d / "FAULT_PHANTOM").write_text("drill\n", encoding="utf-8")
-    halted = _wait(lambda: (d / "HALT").exists()
-                   and "position" in (d / "HALT").read_text(encoding="utf-8"),
-                   clock, sleep, cfg["trade"]["reconcile_s"] + 60)
-    (d / "FAULT_PHANTOM").unlink(missing_ok=True)
-    (d / "HALT").unlink(missing_ok=True)
+    try:
+        halted = _wait(lambda: (d / "HALT").exists()
+                       and "position" in (d / "HALT").read_text(encoding="utf-8"),
+                       clock, sleep, cfg["trade"]["reconcile_s"] + 60)
+    finally:
+        (d / "FAULT_PHANTOM").unlink(missing_ok=True)
+        (d / "HALT").unlink(missing_ok=True)
     return halted, ("a phantom position halted the loop; cleared" if halted
                     else "mismatch did not halt within the reconcile window")
 

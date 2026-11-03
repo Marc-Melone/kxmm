@@ -190,6 +190,8 @@ class Trader:
             self._reconcile()
             self.next_reconcile = now + self.tc["reconcile_s"]
         tradedb.heartbeat(self.con, now)
+        if not self.halted:
+            tradedb.mark_up(self.con, now)     # only a completed trading cycle is uptime
 
     def _quote(self, t: str, meta: Meta, now: float, resting: list[dict],
                marks: dict[str, float]) -> None:

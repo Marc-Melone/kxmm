@@ -35,10 +35,12 @@ def test_panic_cancels_without_loop(tmp_path, monkeypatch, capsys):
     assert (root / "out" / "trade" / "HALT").exists() and (root / "out" / "trade" / "KILL").exists()
 
 
-def full_days(con, first_day, n):
+def full_days(con, first_day, n, reconciles=True):
     for d in range(first_day, first_day + n):
         for minute in range(24 * 60):
-            tradedb.heartbeat(con, D0 + d * 86400 + minute * 60)
+            tradedb.mark_up(con, D0 + d * 86400 + minute * 60)
+        for hour in range(24 if reconciles else 0):
+            tradedb.event(con, D0 + d * 86400 + hour * 3600 + 30, "reconcile_ok")
 
 
 def test_gate_b_needs_clean_days_and_drills(tmp_path):
@@ -57,3 +59,22 @@ def test_gate_b_needs_clean_days_and_drills(tmp_path):
     tradedb.event(con, D0 + 2 * 86400 + 5, "error", "boom")     # day 3 is no longer clean
     ok, reasons = gate_b(con, now, TC)
     assert not ok and any("2 of 5 clean days" in r for r in reasons)
+
+
+def test_gate_b_day_needs_reconciles_not_just_uptime(tmp_path):
+    con = tradedb.connect(tmp_path / "trade.db")
+    full_days(con, 0, 5, reconciles=False)
+    for name in DRILLS:
+        tradedb.drill_result(con, D0, name, True, "ok")
+    ok, reasons = gate_b(con, D0 + 5 * 86400 + 600, TC)
+    assert not ok and any("0 of 5 clean days" in r for r in reasons)
+
+
+def test_start_refuses_and_status_warns_with_leftover_fault_file(tmp_path, monkeypatch, capsys):
+    root = setup_root(tmp_path, monkeypatch)
+    (root / "out" / "trade").mkdir(parents=True)
+    (root / "out" / "trade" / "FAULT_NET").write_text("drill")
+    assert cli.main(["trade", "start"], root=root) == 1
+    assert "FAULT_NET" in capsys.readouterr().out
+    cli.main(["trade", "status"], root=root)
+    assert "FAULT_NET" in capsys.readouterr().out

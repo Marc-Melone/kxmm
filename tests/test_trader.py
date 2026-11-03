@@ -25,7 +25,8 @@ class Clock:
 def make(tmp_path, book=None, clock=None):
     clock = clock or Clock()
     fake = FakeTradeClient(books={"K": book if book is not None else raw_book(YES, NO)},
-                           markets=[market("K")], now=clock)
+                           markets=[market("K")], now=clock,
+                           fault_dir=tmp_path / "out" / "trade")
     con = tradedb.connect(tmp_path / "out" / "trade" / "trade.db")
     tr = Trader(CFG, fake, con, tmp_path, clock=clock, sleep=lambda s: None,
                 awake=contextlib.nullcontext)
@@ -141,3 +142,23 @@ def test_action_error_is_recorded_not_fatal(tmp_path):
     tr.start()
     tr.cycle(clock())
     assert events(con, "error") and "post_only_cross" in events(con, "error")[0]
+
+
+def uptime(con):
+    return con.execute("SELECT COUNT(*) FROM uptime").fetchone()[0]
+
+
+def test_only_completed_trading_cycles_count_as_uptime(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tdir = tmp_path / "out" / "trade"
+    tr.start()
+    tr.tick()
+    assert uptime(con) == 1
+    (tdir / "FAULT_NET").write_text("")          # offline: cycles fail
+    clock.t += 120
+    tr.tick()
+    (tdir / "FAULT_NET").unlink()
+    (tdir / "HALT").write_text("x")              # halted: no trading
+    clock.t += 120
+    tr.tick()
+    assert uptime(con) == 1
