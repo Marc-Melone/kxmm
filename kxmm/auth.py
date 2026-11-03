@@ -15,12 +15,21 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 
 
+def _decode(raw: bytes) -> str:
+    """Notepad writes UTF-8 (sometimes with a BOM); PowerShell 5.1's > writes UTF-16."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    return raw.decode("utf-8-sig")
+
+
 def load_env(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = _decode(Path(path).read_bytes())
     except OSError:
         return out
+    except UnicodeDecodeError:
+        raise SystemExit(f"{Path(path).name} is not readable text: save it as UTF-8") from None
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:

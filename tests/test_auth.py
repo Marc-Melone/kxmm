@@ -49,3 +49,13 @@ def test_load_env_parses_and_ignores_comments(tmp_path):
     assert load_env(p) == {"KALSHI_DEMO_KEY_ID": "abc-123",
                            "KALSHI_DEMO_KEY_PATH": "C:\\keys\\demo.pem", "QUOTED": "x y"}
     assert load_env(tmp_path / "missing.env") == {}
+
+
+def test_load_env_handles_windows_encodings(tmp_path):
+    body = "KALSHI_DEMO_KEY_ID=abc-123\nKALSHI_DEMO_KEY_PATH=C:\\keys\\demo.pem\n"
+    p = tmp_path / ".env"
+    p.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))          # Notepad's UTF-8 with BOM
+    assert load_env(p)["KALSHI_DEMO_KEY_ID"] == "abc-123"
+    p.write_bytes(body.encode("utf-16"))                            # PowerShell 5.1's > / Out-File
+    assert load_env(p) == {"KALSHI_DEMO_KEY_ID": "abc-123",
+                           "KALSHI_DEMO_KEY_PATH": "C:\\keys\\demo.pem"}

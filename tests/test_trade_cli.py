@@ -91,3 +91,30 @@ def test_panic_writes_halt_and_kill_even_if_cancel_fails(tmp_path, monkeypatch, 
     cli.cmd_trade_panic(root, load_config(root / "config.yaml"), client=fake)
     assert (root / "out" / "trade" / "HALT").exists() and (root / "out" / "trade" / "KILL").exists()
     assert "could not cancel" in capsys.readouterr().out
+
+
+def test_start_with_bad_key_explains_without_the_path(tmp_path, monkeypatch, capsys):
+    root = setup_root(tmp_path, monkeypatch)
+    secret_path = str(tmp_path / "very-private-folder" / "demo.pem")
+    (root / ".env").write_text(f"KALSHI_DEMO_KEY_ID=abc\nKALSHI_DEMO_KEY_PATH={secret_path}\n",
+                               encoding="utf-8")
+    assert cli.main(["trade", "start"], root=root) == 1
+    out = capsys.readouterr().out
+    assert "KALSHI_DEMO_KEY_PATH" in out and "very-private-folder" not in out
+
+
+def test_tradeloop_records_a_start_failure(tmp_path, monkeypatch):
+    import pytest
+    import kxmm.tradeloop as tl
+    from kxmm.kalshi_trade import TradeError
+    from kxmm.trader import Trader
+    root = setup_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(tl, "build_client", lambda cfg, root: FakeTradeClient())
+
+    def boom(self):
+        raise TradeError("401 unauthorized: check the API key and the system clock")
+    monkeypatch.setattr(Trader, "start", boom)
+    with pytest.raises(TradeError):
+        tl.main(["--config", str(root / "config.yaml")])
+    con = tradedb.connect(root / "out" / "trade" / "trade.db")
+    assert "clock" in con.execute("SELECT detail FROM events WHERE kind='error'").fetchone()[0]

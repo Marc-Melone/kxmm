@@ -84,9 +84,9 @@ The trader runs the quoting rules on Kalshi's **demo exchange** (mock money). It
 **One-time setup:**
 1. Make a demo account at https://demo.kalshi.co (it is separate from your real Kalshi login).
 2. In the demo site's account settings, create an **API key** (choose **Ed25519** if asked) on the Windows machine. Save the downloaded `.pem` **outside** the kxmm folder, e.g. `C:\Users\<you>\keys\kalshi-demo.pem`.
-3. Copy `.env.example` to `.env` in the kxmm folder and fill in both lines: the key ID shown by Kalshi and the path to the `.pem`. Then lock the file down:
+3. Copy `.env.example` to `.env` in the kxmm folder and fill in both lines (in Notepad): the key ID shown by Kalshi and the path to the `.pem`. Then lock the file down:
    ```powershell
-   icacls .env /inheritance:r /grant:r "$env:USERNAME:(R,W)"
+   icacls .env /inheritance:r /grant:r "${env:USERNAME}:(R,W)"
    ```
    Never paste the key or its ID into a chat.
 

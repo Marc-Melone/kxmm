@@ -186,7 +186,7 @@ def cmd_trade_status(root: Path, cfg: dict) -> None:
 def cmd_trade(root: Path, cfg: dict, argv: list[str]) -> int:
     from . import tradedb
     from .drills import DRILLS, DRILLS_NEEDING_LOOP, run_drill
-    from .tradeloop import KEY_ID, KEY_PATH, build_client, demo_credentials
+    from .tradeloop import KEY_ID, KEY_PATH, build_client, demo_credentials, load_signer
     tdir = root / "out" / "trade"
     sub = argv[0] if argv else ""
     if sub == "start":
@@ -199,6 +199,11 @@ def cmd_trade(root: Path, cfg: dict, argv: list[str]) -> int:
         if not key_id or not key_path:
             print(f"missing {KEY_ID if not key_id else KEY_PATH}: create a Kalshi DEMO API key "
                   "and set it in .env (see README, Phase 3)")
+            return 1
+        try:
+            load_signer(root)                     # fail here, not silently in the background
+        except SystemExit as e:
+            print(e)
             return 1
         con = tradedb.connect(tdir / "trade.db")
         if loop_state(con, time.time(), _trade_stale_after(cfg))[0] == "RUNNING":
