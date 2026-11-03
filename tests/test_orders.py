@@ -43,3 +43,10 @@ def test_amend_count_includes_filled():
     acts = plan_actions(Q, {"yes": live("yes", 0.49, remaining=4, filled=6),
                             "no": live("no", 0.48)}, CENT)
     assert [(a.kind, a.side, a.amend_count) for a in acts] == [("amend", "yes", 16)]
+
+
+def test_sizes_round_down_to_cents_and_compare_at_that_grain():
+    q = Quotes(yes_bid=0.49, yes_size=0.7029, no_bid=None, no_size=0)
+    acts = plan_actions(q, {}, CENT)
+    assert [(a.kind, a.size) for a in acts] == [("place", 0.70)]
+    assert plan_actions(q, {"yes": live("yes", 0.49, remaining=0.70)}, CENT) == []

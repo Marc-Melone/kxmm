@@ -54,7 +54,7 @@ def _orders(client, con, d, cfg, clock, sleep):
     o = _resting(client, t, oid)
     if not o or abs(float(o["remaining_count_fp"]) - 2) > 1e-9:
         return False, "size amend not reflected"
-    client.batch_cancel([oid])
+    client.batch_cancel([(oid, t)])
     if _resting(client, t, oid):
         return False, "cancelled order still resting"
     return True, f"{t}: place, amend price, amend size, cancel confirmed"
@@ -71,7 +71,7 @@ def _group(client, con, d, cfg, clock, sleep):
     left = [i for i in ids if _resting(client, t, i)]
     client.reset_order_group(gid)
     if left:
-        client.batch_cancel(left)
+        client.batch_cancel([(i, t) for i in left])
         return False, f"trigger left {len(left)} order(s) resting"
     return True, f"{t}: group trigger cancelled both orders; reset"
 

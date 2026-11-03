@@ -18,6 +18,9 @@ class FakeTradeClient:
         self.misreport: dict[str, float] = {}
         self.status = {"trading_active": True, "exchange_active": True}
         self.fail_create: set[str] = set()      # tickers whose create_order raises
+        self.fail_create_msg = "HTTP 409 on POST /portfolio/events/orders: post_only_cross"
+        self.ambiguous_create = False           # order lands, but the call raises Unavailable
+        self.fail_cancel: set[str] = set()      # order ids whose cancel errors per-order
         self.fail_book: set[str] = set()
         self.calls: list[tuple] = []
         self.groups: dict[str, dict] = {}
@@ -42,24 +45,34 @@ class FakeTradeClient:
         self.calls.append(("create", ticker, book_side, round(price, 4), count))
         if ticker in self.fail_create:
             from kxmm.kalshi_trade import TradeError
-            raise TradeError("HTTP 409 on POST /portfolio/events/orders: post_only_cross")
+            raise TradeError(self.fail_create_msg)
         oid = f"o{next(self._ids)}"
         self.orders[oid] = {"order_id": oid, "ticker": ticker, "book_side": book_side,
                             "price": round(price, 4), "remaining": float(count), "filled": 0.0,
-                            "group": order_group_id}
+                            "group": order_group_id, "client_order_id": client_order_id}
+        if self.ambiguous_create:
+            raise Unavailable("POST /portfolio/events/orders: timed out (may have reached Kalshi)")
         return {"order_id": oid}
 
-    def amend_order(self, order_id, ticker, book_side, price, count):
+    def amend_order(self, order_id, ticker, book_side, price, count, expiration_time=None):
         self.calls.append(("amend", ticker, book_side, round(price, 4), count))
+        if order_id not in self.orders:
+            from kxmm.kalshi_public import NotFound
+            raise NotFound(f"/portfolio/events/orders/{order_id}/amend")
         o = self.orders[order_id]
         o["price"], o["remaining"] = round(price, 4), float(count) - o["filled"]
         return {"order_id": order_id}
 
-    def batch_cancel(self, order_ids):
-        self.calls.append(("cancel", tuple(order_ids)))
-        for oid in order_ids:
-            self.orders.pop(oid, None)
-        return {"orders": []}
+    def batch_cancel(self, orders):
+        """orders: [(order_id, ticker)]; returns the ids whose cancel failed."""
+        self.calls.append(("cancel", tuple(o for o, _ in orders)))
+        failed = []
+        for oid, _ in orders:
+            if oid in self.fail_cancel:
+                failed.append(oid)
+            else:
+                self.orders.pop(oid, None)
+        return failed
 
     def cancel_all(self):
         self.calls.append(("cancel_all",))
@@ -70,7 +83,7 @@ class FakeTradeClient:
                  "yes_price_dollars": f"{o['price']:.4f}",
                  "remaining_count_fp": f"{o['remaining']:.2f}",
                  "fill_count_fp": f"{o['filled']:.2f}", "status": "resting",
-                 "order_group_id": o["group"]}
+                 "order_group_id": o["group"], "client_order_id": o.get("client_order_id")}
                 for o in self.orders.values() if ticker in (None, o["ticker"])]
 
     def take(self, ticker, book_side, price, count):

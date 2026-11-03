@@ -64,7 +64,9 @@ class KalshiTrade:
         return None
 
     def _request(self, method: str, path: str, params: dict | None = None,
-                 body: dict | None = None) -> dict:
+                 body: dict | None = None, idempotent: bool = True) -> dict:
+        """Retries 429 always. A new order (idempotent=False) is never re-sent after a
+        network error or 5xx: it may already have reached Kalshi."""
         last = "no attempt"
         for attempt in range(self._max_attempts):
             self._rl.acquire()
@@ -80,6 +82,9 @@ class KalshiTrade:
                                               timeout=self._timeout)
                 except requests.RequestException as e:
                     last = type(e).__name__
+                    if not idempotent:
+                        raise Unavailable(f"{method} {path}: {last}; it may have reached "
+                                          "Kalshi, so it was not re-sent") from None
             if self.on_attempt:
                 self.on_attempt()
             if r is not None:
@@ -101,6 +106,9 @@ class KalshiTrade:
                     raise TradeError(f"HTTP {code} on {method} {path}: "
                                      f"{b.get('code', '')} {b.get('message', '')}".strip())
                 last = f"HTTP {code}"
+                if code >= 500 and not idempotent:
+                    raise Unavailable(f"{method} {path}: {last}; it may have reached Kalshi, "
+                                      "so it was not re-sent")
             if attempt < self._max_attempts - 1:
                 self._sleep(2 ** attempt)
         raise Unavailable(f"{method} {path} failed after {self._max_attempts} attempts ({last})")
@@ -129,22 +137,26 @@ class KalshiTrade:
                 "client_order_id": client_order_id}
         if order_group_id:
             body["order_group_id"] = order_group_id
-        return self._request("POST", "/portfolio/events/orders", body=body)
+        return self._request("POST", "/portfolio/events/orders", body=body, idempotent=False)
 
     def take(self, ticker: str, book_side: str, price: float, count: float) -> dict:
         """Immediate-or-cancel taker order. Drills only: the strategy never takes."""
         return self._request("POST", "/portfolio/events/orders", body={
             "ticker": ticker, "side": book_side, "price": _px(price), "count": _ct(count),
-            "time_in_force": "immediate_or_cancel", "self_trade_prevention_type": "taker_at_cross"})
+            "time_in_force": "immediate_or_cancel", "self_trade_prevention_type": "taker_at_cross"},
+            idempotent=False)
 
     def amend_order(self, order_id: str, ticker: str, book_side: str, price: float,
                     count: float) -> dict:
         return self._request("POST", f"/portfolio/events/orders/{order_id}/amend", body={
             "ticker": ticker, "side": book_side, "price": _px(price), "count": _ct(count)})
 
-    def batch_cancel(self, order_ids: list[str]) -> dict:
-        return self._request("DELETE", "/portfolio/events/orders/batched",
-                             body={"orders": [{"order_id": o} for o in order_ids]})
+    def batch_cancel(self, orders: list[tuple[str, str]]) -> list[str]:
+        """orders: [(order_id, market_ticker)]. Returns the ids Kalshi failed to cancel
+        (failures come back per order inside an HTTP 200)."""
+        d = self._request("DELETE", "/portfolio/events/orders/batched", body={
+            "orders": [{"order_id": o, "market_ticker": t} for o, t in orders]})
+        return [r.get("order_id") for r in d.get("orders") or [] if r.get("error")]
 
     def cancel_all(self) -> None:
         self._request("DELETE", "/portfolio/events/orders")

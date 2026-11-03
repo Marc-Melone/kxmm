@@ -135,9 +135,15 @@ def cmd_trade_panic(root: Path, cfg: dict, client=None) -> None:
     from .tradeloop import build_client
     tdir = root / "out" / "trade"
     tdir.mkdir(parents=True, exist_ok=True)
-    (client or build_client(cfg, root)).cancel_all()
+    # stop the loop first, so it can't re-quote whatever happens to the cancel below
     (tdir / "HALT").write_text("panic\n", encoding="utf-8")
     (tdir / "KILL").write_text("panic\n", encoding="utf-8")
+    try:
+        (client or build_client(cfg, root)).cancel_all()
+    except Exception as e:  # noqa: BLE001 — report, never crash a panic
+        print(f"HALT and KILL written, but could not cancel orders: {e}. "
+              "Run panic again once Kalshi is reachable.")
+        return
     print("all demo orders cancelled; HALT and KILL written")
 
 

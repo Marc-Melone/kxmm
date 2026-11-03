@@ -139,9 +139,69 @@ def test_kill_cancels_all_and_exits(tmp_path):
 def test_action_error_is_recorded_not_fatal(tmp_path):
     tr, fake, con, clock = make(tmp_path)
     fake.fail_create.add("K")
+    fake.fail_create_msg = "HTTP 400 on POST /portfolio/events/orders: invalid_price"
     tr.start()
     tr.cycle(clock())
-    assert events(con, "error") and "post_only_cross" in events(con, "error")[0]
+    assert events(con, "error") and "invalid_price" in events(con, "error")[0]
+
+
+def test_races_are_rejects_not_errors(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    fake.fail_create.add("K")                        # post-only reject: the book moved
+    tr.start()
+    tr.cycle(clock())
+    fake.fail_create.clear()
+    clock.t += 5
+    tr.cycle(clock())
+    bid = next(o for o, v in fake.orders.items() if v["book_side"] == "bid")
+    fake.orders.pop(bid)                             # filled away just before our amend
+    tr._quote("K", tr.meta["K"], clock(), [{"order_id": bid, "ticker": "K", "book_side": "bid",
+             "yes_price_dollars": "0.4000", "remaining_count_fp": "1.00",
+             "fill_count_fp": "0.00"}], tr.marks())
+    assert events(con, "error") == [] and len(events(con, "reject")) == 3   # 2 places + 1 amend
+
+
+def test_no_plumbing_inside_blackout_or_off_demo(tmp_path):
+    tr, fake, con, clock = make(tmp_path, book={"yes_dollars": [["0.4000", "5.00"]],
+                                                "no_dollars": []})
+    fake.market_rows = [market("K", close_days=2)]  # inside the 3-day blackout
+    tr.start()
+    tr.cycle(clock())
+    assert fake.orders == {}
+    (tmp_path / "x").mkdir()
+    tr2, fake2, _, clock2 = make(tmp_path / "x", book={"yes_dollars": [], "no_dollars": []})
+    fake2.is_demo = False
+    tr2.start()
+    tr2.cycle(clock2())
+    assert fake2.orders == {}
+
+
+def test_order_from_an_ambiguous_create_is_adopted_not_foreign(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    fake.ambiguous_create = True
+    tr.start()
+    tr.cycle(clock())                                # creates land but the calls "time out"
+    fake.ambiguous_create = False
+    clock.t += TC["reconcile_s"]
+    tr.cycle(clock())
+    assert events(con, "outage") and events(con, "reconcile_bad") == []
+    assert len(fake.orders) == 2                     # adopted, not doubled
+
+
+def test_failed_cancel_is_kept_and_retried(tmp_path):
+    tr, fake, con, clock = make(tmp_path)
+    tr.start()
+    tr.cycle(clock())
+    fake.fail_cancel = set(fake.orders)
+    fake.fail_book.add("K")
+    clock.t += TC["stale_book_s"] + 1
+    tr.cycle(clock())                                # stale: cancel fails
+    assert len(fake.orders) == 2
+    fake.fail_cancel.clear()
+    clock.t += 5
+    tr.cycle(clock())                                # retried, not forgotten
+    assert fake.orders == {}
+
 
 
 def uptime(con):

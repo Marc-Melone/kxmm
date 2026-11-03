@@ -68,11 +68,13 @@ def test_signed_path_includes_prefix_not_query():
 
 def test_batch_cancel_and_amend_bodies():
     c, s, _ = client([(200, {"orders": []}), (200, {"order_id": "o1", "ts_ms": 1})])
-    c.batch_cancel(["o1", "o2"])
+    c.batch_cancel([("o1", "K"), ("o2", "K")])
     c.amend_order("o1", "K", "bid", 0.49, 7)
     assert (s.calls[0]["method"], s.calls[0]["url"]) == ("DELETE",
                                                          BASE + "/portfolio/events/orders/batched")
-    assert s.calls[0]["json"] == {"orders": [{"order_id": "o1"}, {"order_id": "o2"}]}
+    # market_ticker routes each cancel to the right exchange shard
+    assert s.calls[0]["json"] == {"orders": [{"order_id": "o1", "market_ticker": "K"},
+                                             {"order_id": "o2", "market_ticker": "K"}]}
     assert (s.calls[1]["method"], s.calls[1]["url"]) == ("POST",
                                                          BASE + "/portfolio/events/orders/o1/amend")
     assert s.calls[1]["json"] == {"ticker": "K", "side": "bid", "price": "0.4900", "count": "7.00"}
@@ -116,3 +118,19 @@ def test_fault_files_only_on_demo(tmp_path):
     with pytest.raises(Unavailable):
         c.exchange_status()
     assert s.calls == []                       # faults never reach the network
+
+
+def test_batch_cancel_returns_per_order_failures():
+    c, _, _ = client([(200, {"orders": [{"order_id": "o1", "reduced_by": "1.00"},
+                                        {"order_id": "o2", "reduced_by": "0.00",
+                                         "error": {"code": "not_found", "message": "gone"}}]})])
+    assert c.batch_cancel([("o1", "K"), ("o2", "K")]) == ["o2"]
+
+
+def test_order_post_is_not_retried_after_ambiguous_failure():
+    c, s, _ = client([(503, {})])
+    with pytest.raises(Unavailable, match="may have reached"):
+        c.create_order("K", "bid", 0.03, 1, "cid", None)
+    assert len(s.calls) == 1                       # never re-sent: it may have landed
+    c, s, _ = client([(429, {}), (201, {"order_id": "o1"})])
+    assert c.create_order("K", "bid", 0.03, 1, "cid", None)["order_id"] == "o1"   # 429 is safe

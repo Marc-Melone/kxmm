@@ -18,10 +18,11 @@ from . import tradedb
 from .book import Book
 from .db import iso_ts
 from .fair import EwmaVol, logit, microprice
-from .kalshi_public import Unavailable
+from .kalshi_public import NotFound, Unavailable
+from .kalshi_trade import TradeError
 from .keepawake import keep_awake
 from .orders import LiveOrder, from_book, plan_actions, to_book
-from .quoting import Quotes, make_quotes
+from .quoting import Quotes, blackout_at, make_quotes
 from .replay import Meta, Program
 from .rewards import tick_size
 from .risk import Pnl, event_room, loss_state, reconcile, seed_positions
@@ -55,6 +56,7 @@ class Trader:
         self.book_ts: dict[str, float] = {}
         self.stale: set[str] = set()
         self.known_ids: set[str] = set()
+        self.client_ids: set[str] = set()          # client_order_ids we generated
         self.fill_since = 0.0
         self.next_status = self.next_reconcile = 0.0
         self.trading_ok = True
@@ -117,15 +119,27 @@ class Trader:
             lo = LiveOrder(o["order_id"], side, price, float(o["remaining_count_fp"]),
                            float(o.get("fill_count_fp") or 0))
             if side in out:                        # a duplicate on one side: cancel it
-                self.client.batch_cancel([lo.order_id])
+                self.client.batch_cancel([(lo.order_id, ticker)])
                 continue
             out[side] = lo
         return out
 
-    def _cancel_market(self, resting: list[dict], ticker: str) -> None:
-        ids = [o["order_id"] for o in resting if o["ticker"] == ticker]
-        if ids:
-            self.client.batch_cancel(ids)
+    def _cancel_market(self, resting: list[dict], ticker: str) -> list[str]:
+        """Cancel the market's resting orders; returns the ids that failed."""
+        ids = [(o["order_id"], ticker) for o in resting if o["ticker"] == ticker]
+        return self.client.batch_cancel(ids) if ids else []
+
+    def _adopt(self, resting: list[dict]) -> None:
+        """Orders we placed (by our client id) are ours even if the create call failed."""
+        for o in resting:
+            if o.get("client_order_id") in self.client_ids:
+                self.known_ids.add(o["order_id"])
+
+    def _rejected(self, e: Exception) -> bool:
+        """Normal market-making races: the order filled first, or the book moved."""
+        text = str(e)
+        return isinstance(e, NotFound) or (isinstance(e, TradeError)
+                                           and ("HTTP 409" in text or "post_only" in text))
 
     # --- state that must survive a restart (loss stops, cash, marks) -------
     _STATE = ("cash", "day_key", "day_start", "week_key", "week_start", "paused_until",
@@ -231,6 +245,7 @@ class Trader:
             except Exception as e:  # noqa: BLE001
                 log.warning("book %s: %s", t, e)
         resting = self.client.resting_orders()
+        self._adopt(resting)
         self._ingest_fills()
         marks = self.marks()
         if self._loss_check(now, marks):
@@ -239,12 +254,14 @@ class Trader:
         for t, meta in self.meta.items():
             if now - self.book_ts.get(t, -math.inf) > self.tc["stale_book_s"]:
                 if t not in self.stale:
-                    self.stale.add(t)
                     try:
-                        self._cancel_market(resting, t)
+                        failed = self._cancel_market(resting, t)
                     except Unavailable as e:
+                        failed = ["(unreachable)"]
                         self._event("outage", f"{t} stale cancel: {e}")
-                    self._event("stale", f"{t}: no book for {self.tc['stale_book_s']} s")
+                    if not failed:                 # only a confirmed cancel ends the retries
+                        self.stale.add(t)
+                        self._event("stale", f"{t}: no book for {self.tc['stale_book_s']} s")
                 continue
             if not quoting:
                 continue
@@ -262,8 +279,9 @@ class Trader:
         book, pos = self.books[t], self.pnl.position(t)
         var = self.vol[t].var_per_s if self.vol[t].var_per_s is not None else 0.0
         q = make_quotes(book, pos, var, now, meta, self.program, self.scfg)
-        if q is None and not (book.yes and book.no):
-            q = self._plumbing(book, now, meta.price_ranges)
+        if (q is None and not (book.yes and book.no) and self.client.is_demo
+                and self.tc.get("plumbing", True) and now < blackout_at(meta, self.scfg)):
+            q = self._plumbing(book, now, meta.price_ranges)   # demo plumbing only
         if q is not None and event_room(self.pnl.positions(), marks, self.event_of, t,
                                         self.tc) <= 0:
             if pos >= 0:                           # pull the side that would add exposure
@@ -274,18 +292,28 @@ class Trader:
             try:
                 if a.kind == "place":
                     bs, px = to_book(a.side, a.price)
-                    r = self.client.create_order(t, bs, px, a.size, str(uuid.uuid4()),
-                                                 self.groups.get(t))
+                    cid = str(uuid.uuid4())
+                    self.client_ids.add(cid)       # before the call: it may land and time out
+                    r = self.client.create_order(t, bs, px, a.size, cid, self.groups.get(t))
                     self.known_ids.add(r.get("order_id"))
                 elif a.kind == "amend":
                     bs, px = to_book(a.side, a.price)
-                    self.client.amend_order(a.order_id, t, bs, px, a.amend_count)
+                    r = self.client.amend_order(a.order_id, t, bs, px, a.amend_count) or {}
+                    new_id = r.get("order_id")
+                    if new_id and new_id != a.order_id:
+                        self.known_ids.discard(a.order_id)
+                        self.known_ids.add(new_id)
                 else:
-                    self.client.batch_cancel([a.order_id])
-                    self.known_ids.discard(a.order_id)
+                    if self.client.batch_cancel([(a.order_id, t)]):
+                        self._event("reject", f"{t} cancel {a.side}: Kalshi kept the order")
+                    else:
+                        self.known_ids.discard(a.order_id)
             except Unavailable as e:              # network / rate limit: handled, not a bug
                 self._event("outage", f"{t} {a.kind} {a.side}: {e}")
-            except Exception as e:  # noqa: BLE001 — one failed action never stops the loop
+            except Exception as e:  # noqa: BLE001
+                if self._rejected(e):             # a race, re-planned next cycle
+                    self._event("reject", f"{t} {a.kind} {a.side}: {e}")
+                    continue
                 self._event("error", f"{t} {a.kind} {a.side}: {e}")
 
     def _ingest_fills(self) -> None:
@@ -319,6 +347,7 @@ class Trader:
 
     def _reconcile(self) -> None:
         remote = self.client.resting_orders()
+        self._adopt(remote)
         remote_ids = {o["order_id"] for o in remote}
         self.known_ids &= remote_ids               # filled or cancelled orders are simply gone
         local = self.pnl.positions()

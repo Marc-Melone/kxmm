@@ -78,3 +78,16 @@ def test_start_refuses_and_status_warns_with_leftover_fault_file(tmp_path, monke
     assert "FAULT_NET" in capsys.readouterr().out
     cli.main(["trade", "status"], root=root)
     assert "FAULT_NET" in capsys.readouterr().out
+
+
+def test_panic_writes_halt_and_kill_even_if_cancel_fails(tmp_path, monkeypatch, capsys):
+    from kxmm.kalshi_public import Unavailable
+    root = setup_root(tmp_path, monkeypatch)
+    fake = FakeTradeClient()
+
+    def down():
+        raise Unavailable("network down")
+    fake.cancel_all = down
+    cli.cmd_trade_panic(root, load_config(root / "config.yaml"), client=fake)
+    assert (root / "out" / "trade" / "HALT").exists() and (root / "out" / "trade" / "KILL").exists()
+    assert "could not cancel" in capsys.readouterr().out
